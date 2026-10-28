@@ -1,0 +1,394 @@
+object BurnerForm: TBurnerForm
+  Left = 142
+  Top = 114
+  Width = 943
+  Height = 606
+  Caption = 'CD Burner Test Application Dancemammal.com 2005'
+  Color = clBtnFace
+  Font.Charset = DEFAULT_CHARSET
+  Font.Color = clWindowText
+  Font.Height = -11
+  Font.Name = 'MS Sans Serif'
+  Font.Style = '[]'
+  Menu = MainMenu1
+  OldCreateOrder = False
+  OnCreate = FormCreate
+  OnDestroy = FormDestroy
+  PixelsPerInch = 96
+  TextHeight = 13
+  object Button1: TButton
+    Left = 462
+    Top = 195
+    Width = 75
+    Height = 25
+    Caption = 'TOC'
+    TabOrder = 0
+  end
+  object PageControl1: TPageControl
+    Left = 0
+    Top = 67
+    Width = 935
+    Height = 430
+    ActivePage = TabSheet1
+    Align = alClient
+    TabIndex = 1
+    TabOrder = 1
+    object TabSheet6: TTabSheet
+      Caption = 'Table Of Contents'
+      ImageIndex = 5
+      object ReadTocListView: TListView
+        Left = 0
+        Top = 0
+        Width = 927
+        Height = 402
+        Align = alClient
+        Columns = <
+  Caption = 'No'
+  Width = 30
+  Caption = 'Num'
+  Width = 40
+  Caption = 'LBA'
+  Width = 75
+  Caption = 'Flags'
+  Width = 350
+>
+        ColumnClick = False
+        GridLines = True
+        ReadOnly = True
+        TabOrder = 0
+        ViewStyle = vsReport
+      end
+    end
+    object TabSheet1: TTabSheet
+      Caption = 'Audio Track List'
+      ImageIndex = 1
+      object TrackListBox: TListBox
+        Left = 0
+        Top = 20
+        Width = 927
+        Height = 382
+        Align = alClient
+        ItemHeight = 13
+        TabOrder = 0
+      end
+      object ArtistPanel: TPanel
+        Left = 0
+        Top = 0
+        Width = 927
+        Height = 20
+        Align = alTop
+        BevelOuter = bvLowered
+        Caption = 'Artist / Album'
+        Font.Charset = ANSI_CHARSET
+        Font.Color = clWindowText
+        Font.Height = -13
+        Font.Name = 'Trebuchet MS'
+        Font.Style = '[]'
+        ParentFont = False
+        TabOrder = 1
+      end
+    end
+  end
+  object ToolBar1: TToolBar
+    Left = 0
+    Top = 29
+    Width = 935
+    Height = 38
+    AutoSize = True
+    ButtonHeight = 36
+    ButtonWidth = 57
+    Caption = 'ToolBar1'
+    Flat = True
+    Images = ImageList1
+    ParentShowHint = False
+    ShowCaptions = True
+    ShowHint = False
+    TabOrder = 2
+    object ToolButton4: TToolButton
+      Left = 0
+      Top = 0
+      Width = 8
+      Caption = 'ToolButton4'
+      ImageIndex = 3
+      Style = tbsSeparator
+    end
+    object ToolButton1: TToolButton
+      Left = 8
+      Top = 0
+      Hint = 'RIP CD To ISO File'
+      Caption = 'CD to ISO'
+      ImageIndex = 3
+      OnClick = SaveCDToISOImage1Click
+    end
+    object ToolButton2: TToolButton
+      Left = 65
+      Top = 0
+      Hint = 'Burn ISO To CD'
+      Caption = 'ISO to CD'
+      ImageIndex = 0
+      OnClick = BurnISOToCD1Click
+    end
+    object ToolButton6: TToolButton
+      Left = 122
+      Top = 0
+      Width = 8
+      Caption = 'ToolButton6'
+      ImageIndex = 6
+      Style = tbsSeparator
+    end
+    object ToolButton3: TToolButton
+      Left = 130
+      Top = 0
+      Hint = 'Burn Audio File To CD'
+      Caption = 'Audio CD'
+      ImageIndex = 1
+      OnClick = BurnWaveFileToCD1Click
+    end
+    object ToolButton8: TToolButton
+      Left = 187
+      Top = 0
+      Width = 8
+      Caption = 'ToolButton8'
+      ImageIndex = 5
+      Style = tbsSeparator
+    end
+    object ToolButton11: TToolButton
+      Left = 195
+      Top = 0
+      Caption = 'DAO Burn'
+      ImageIndex = 2
+      OnClick = ToolButton11Click
+    end
+    object ToolButton10: TToolButton
+      Left = 252
+      Top = 0
+      Width = 8
+      Caption = 'ToolButton10'
+      ImageIndex = 6
+      Style = tbsSeparator
+    end
+    object ToolButton5: TToolButton
+      Left = 260
+      Top = 0
+      Hint = 'Format CD in Burner'
+      Caption = 'Format CD'
+      ImageIndex = 4
+    end
+    object ToolButton7: TToolButton
+      Left = 317
+      Top = 0
+      Hint = 'Blank CD In Burner'
+      Caption = 'Blank CD'
+      ImageIndex = 5
+    end
+    object ToolButton12: TToolButton
+      Left = 374
+      Top = 0
+      Caption = 'CD Info'
+      ImageIndex = 6
+      OnClick = ToolButton12Click
+    end
+  end
+  object Panel1: TPanel
+    Left = 0
+    Top = 497
+    Width = 935
+    Height = 36
+    Align = alBottom
+    TabOrder = 3
+    object CDSize1: TCDSize
+      Left = 1
+      Top = 6
+      Width = 933
+      Height = 29
+      Cursor = crCross
+      Hint = 'Current CD Size'
+      Align = alBottom
+      OnOverBurn = CDSize1OverBurn
+      BarColour = clMoneyGreen
+      MemBarColour = 16776176
+      ProgressGap = 0
+      MaxCDSize = 4700
+      MaxMemory = 4500
+      MemShaded = 500
+      TickColour = clNavy
+    end
+  end
+  object StatusBar2: TStatusBar
+    Left = 0
+    Top = 533
+    Width = 935
+    Height = 19
+    Panels = <
+  Text = 'Error :'
+  Width = 200
+  Text = 'Bytes : '
+  Width = 180
+  Text = 'Sector'
+  Width = 100
+>
+    SimplePanel = False
+  end
+  object ToolBar2: TToolBar
+    Left = 0
+    Top = 0
+    Width = 935
+    Height = 29
+    ButtonHeight = 13
+    Caption = 'ToolBar2'
+    TabOrder = 5
+    object ToolButton9: TToolButton
+      Left = 0
+      Top = 2
+      Width = 8
+      Caption = 'ToolButton9'
+      Style = tbsSeparator
+    end
+    object Label1: TLabel
+      Left = 8
+      Top = 2
+      Width = 80
+      Height = 13
+      Alignment = taCenter
+      Caption = 'CD Burner Unit   '
+      Layout = tlCenter
+    end
+    object DriveCombo: TComboBox
+      Left = 88
+      Top = 2
+      Width = 484
+      Height = 21
+      ItemHeight = 13
+      TabOrder = 0
+    end
+  end
+  object MainMenu1: TMainMenu
+    Left = 266
+    Top = 134
+    object File1: TMenuItem
+      Caption = '&File'
+      object AddTrackToTrackList1: TMenuItem
+        Caption = 'Open ISO9660 Image'
+        OnClick = AddTrackToTrackList1Click
+      end
+    end
+    object Options1: TMenuItem
+      Caption = '&Options'
+      object CDCapabilities1: TMenuItem
+        Caption = 'Show CD Capabilities'
+        OnClick = CDCapabilities1Click
+      end
+      object ShowReadWriteSpeeds1: TMenuItem
+        Caption = 'Show Read Write Speeds'
+        OnClick = ShowReadWriteSpeeds1Click
+      end
+      object ShowWriterParameters1: TMenuItem
+        Caption = 'Show Writer Parameters'
+        OnClick = ShowWriterParameters1Click
+      end
+      object N4: TMenuItem
+        Caption = '-'
+      end
+      object GetCDDVDStructure1: TMenuItem
+        Caption = 'Get CD / DVD Structure'
+        OnClick = GetCDDVDStructure1Click
+      end
+      object ViewTOC1: TMenuItem
+        Caption = 'View TOC (Table of Contents)'
+        OnClick = ViewTOC1Click
+      end
+      object CreateACUEFile1: TMenuItem
+        Caption = 'Create A CUE File'
+        OnClick = CreateACUEFile1Click
+      end
+      object GetCDTEXT1: TMenuItem
+        Caption = 'Get CDTEXT'
+        OnClick = GetCDTEXT1Click
+      end
+      object GetCDDBIDFromAudioCD1: TMenuItem
+        Caption = 'Get CDDB Info From Audio CD'
+        OnClick = GetCDDBIDFromAudioCD1Click
+      end
+      object N5: TMenuItem
+        Caption = '-'
+      end
+      object GetBufferBits1: TMenuItem
+        Caption = 'Get Buffer Bits'
+        OnClick = GetBufferBits1Click
+      end
+    end
+    object Functions1: TMenuItem
+      Caption = '&Functions'
+      object SaveCDToISOImage1: TMenuItem
+        Caption = 'Save CD To ISO Image'
+        OnClick = SaveCDToISOImage1Click
+      end
+      object N1: TMenuItem
+        Caption = '-'
+      end
+      object BurnISOToCD1: TMenuItem
+        Caption = 'Burn ISO Image To CD'
+        OnClick = BurnISOToCD1Click
+      end
+      object BurnWaveFileToCD1: TMenuItem
+        Caption = 'Burn Wave File To CD'
+        OnClick = BurnWaveFileToCD1Click
+      end
+      object N2: TMenuItem
+        Caption = '-'
+      end
+      object BurnDAOCueFile1: TMenuItem
+        Caption = 'Burn DAO Cue File'
+        OnClick = ToolButton11Click
+      end
+      object N6: TMenuItem
+        Caption = '-'
+      end
+      object FormatCD1: TMenuItem
+        Caption = 'Format CD'
+      end
+      object BlankCD1: TMenuItem
+        Caption = 'Blank CD'
+        OnClick = BlankCD1Click
+      end
+    end
+    object AudioFunctions1: TMenuItem
+      Caption = 'Audio Functions'
+      object AddTracktoList1: TMenuItem
+        Caption = 'Add Audio Track to List'
+        OnClick = AddTracktoList1Click
+      end
+      object N3: TMenuItem
+        Caption = '-'
+      end
+      object BurnTracksToAudioCD1: TMenuItem
+        Caption = 'Burn Tracks To Audio CD'
+      end
+    end
+    object ISOFunctions1: TMenuItem
+      Caption = '&ISO Functions'
+      object CreateISO9660File1: TMenuItem
+        Caption = '&Create ISO9660 File'
+        OnClick = CreateISO9660File1Click
+      end
+    end
+  end
+  object SaveDialog1: TSaveDialog
+    DefaultExt = '.ISO'
+    Filter = 'ISO CD Image File|*.ISO|All Files|*.*'
+    Left = 342
+    Top = 150
+  end
+  object OpenDialog1: TOpenDialog
+    DefaultExt = '.ISO'
+    Filter = 'ISO Files (*.iso)|*.iso|Wav Files (*.wav)|*.wav|CUE Files (*.cue)|*.cue|All Files (*.*)|*.*'
+    Options = '[ofHideReadOnly, ofAllowMultiSelect, ofEnableSizing]'
+    Left = 424
+    Top = 151
+  end
+  object ImageList1: TImageList
+    Left = 213
+    Top = 151
+    Bitmap = <binary 12838B: 494c010107000900040010001000ffffffffff10ffffffffffffffff424d36000000000000003600000028000000400000003000000001002000000000000030...>
+  end
+end

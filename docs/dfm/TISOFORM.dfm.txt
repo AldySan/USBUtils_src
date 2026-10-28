@@ -1,0 +1,173 @@
+object ISOForm: TISOForm
+  Left = 285
+  Top = 106
+  Width = 605
+  Height = 648
+  Caption = 'ISO9660 Test Application'
+  Color = clBtnFace
+  Font.Charset = DEFAULT_CHARSET
+  Font.Color = clWindowText
+  Font.Height = -11
+  Font.Name = 'MS Sans Serif'
+  Font.Style = '[]'
+  Menu = MainMenu1
+  OldCreateOrder = False
+  OnCreate = FormCreate
+  OnDestroy = FormDestroy
+  PixelsPerInch = 96
+  TextHeight = 13
+  object StatusBar1: TStatusBar
+    Left = 0
+    Top = 575
+    Width = 597
+    Height = 19
+    Panels = <
+>
+    SimplePanel = False
+  end
+  object Panel1: TPanel
+    Left = 0
+    Top = 409
+    Width = 597
+    Height = 166
+    Align = alBottom
+    BevelInner = bvRaised
+    BevelOuter = bvLowered
+    TabOrder = 1
+    object mem_DebugOut: TMemo
+      Left = 2
+      Top = 2
+      Width = 593
+      Height = 162
+      Align = alClient
+      BorderStyle = bsNone
+      Font.Charset = DEFAULT_CHARSET
+      Font.Color = clWindowText
+      Font.Height = -11
+      Font.Name = 'Courier New'
+      Font.Pitch = fpFixed
+      Font.Style = '[]'
+      ParentFont = False
+      ReadOnly = True
+      ScrollBars = ssVertical
+      TabOrder = 0
+    end
+  end
+  object tv_Directory: TTreeView
+    Left = 0
+    Top = 27
+    Width = 597
+    Height = 382
+    Align = alClient
+    Images = ImageList1
+    Indent = 19
+    PopupMenu = PopupMenu1
+    RightClickSelect = True
+    TabOrder = 2
+    OnChange = tv_DirectoryChange
+    OnDblClick = tv_DirectoryDblClick
+  end
+  object Panel2: TPanel
+    Left = 0
+    Top = 0
+    Width = 597
+    Height = 27
+    Align = alTop
+    TabOrder = 3
+    object Label1: TLabel
+      Left = 14
+      Top = 6
+      Width = 49
+      Height = 13
+      Caption = 'Volume ID'
+    end
+    object VolIDEdit: TEdit
+      Left = 68
+      Top = 2
+      Width = 266
+      Height = 21
+      TabOrder = 0
+      Text = 'TEST_ISO9660'
+    end
+  end
+  object MainMenu1: TMainMenu
+    Left = 318
+    Top = 47
+    object mm_File: TMenuItem
+      Caption = 'File'
+      object NewISOImage1: TMenuItem
+        Caption = 'New ISO Image'
+        OnClick = Image1Click
+      end
+      object N1: TMenuItem
+        Caption = '-'
+      end
+      object sm_File_Open: TMenuItem
+        Caption = 'Open ISO Image'
+        OnClick = sm_File_OpenClick
+      end
+      object sm_File_SaveAs: TMenuItem
+        Caption = 'Save ISO Image As'
+        OnClick = sm_File_SaveAsClick
+      end
+      object SaveDVDImageas1: TMenuItem
+        Caption = 'Save DVD Image As'
+        OnClick = SaveDVDImageas1Click
+      end
+      object sm_File_Close: TMenuItem
+        Caption = 'Close Image'
+        Enabled = False
+        OnClick = sm_File_CloseClick
+      end
+      object sm_File_Break1: TMenuItem
+        Caption = '-'
+      end
+      object sm_File_Quit: TMenuItem
+        Caption = 'Quit'
+        OnClick = sm_File_QuitClick
+      end
+    end
+  end
+  object dlg_OpenImage: TOpenDialog
+    DefaultExt = '.iso'
+    Filter = 'ISO9660 Images (*.iso)|*.iso|All Files (*.*)|*.*'
+    Title = 'Select image to open....'
+    Left = 469
+    Top = 91
+  end
+  object SaveDialog1: TSaveDialog
+    DefaultExt = '.iso'
+    Left = 467
+    Top = 41
+  end
+  object ImageList1: TImageList
+    Left = 320
+    Top = 145
+    Bitmap = <binary 4390B: 494c010103000400040010001000ffffffffff10ffffffffffffffff424d36000000000000003600000028000000400000001000000001002000000000000010...>
+  end
+  object PopupMenu1: TPopupMenu
+    Left = 318
+    Top = 95
+    object CreateDirctory1: TMenuItem
+      Caption = 'Create Directory'
+      OnClick = CreateDirctory1Click
+    end
+    object AddFile1: TMenuItem
+      Caption = 'Add File'
+      OnClick = AddFile1Click
+    end
+    object N2: TMenuItem
+      Caption = '-'
+    end
+    object DeleteDirectory1: TMenuItem
+      Caption = 'Delete Directory'
+      OnClick = DeleteDirectory1Click
+    end
+  end
+  object OpenDialog2: TOpenDialog
+    DefaultExt = '*.*'
+    Filter = 'Any File (*.*)|*.*'
+    Left = 468
+    Top = 145
+  end
+end
