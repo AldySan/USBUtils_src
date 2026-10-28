@@ -4,6 +4,8 @@
 
 #include <cstdio>
 #include <algorithm>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include "port.h"
 
 namespace usbutils {
@@ -12,6 +14,18 @@ static std::string joinPath(const std::string& dir, const std::string& file) {
     if (dir.empty()) return file;
     if (dir.back() == '/' || dir.back() == '\\') return dir + file;
     return dir + "/" + file;
+}
+
+/// Create the destination directory when missing (mkdir -p; the original
+/// assumed the USB drive root already existed, we are friendlier).
+static bool ensureDir(const std::string& dir) {
+    struct stat st{};
+    if (stat(dir.c_str(), &st) == 0) return S_ISDIR(st.st_mode) != 0;
+#if defined(_WIN32)
+    return ::_mkdir(dir.c_str()) == 0;
+#else
+    return ::mkdir(dir.c_str(), 0755) == 0;
+#endif
 }
 
 static uint64_t fileSizeOf(const std::string& p) {
@@ -28,6 +42,11 @@ InstallResult installIso(const std::string& isoPath, const std::string& dir,
                          const ProgressFn& progress,
                          const std::function<bool()>& cancelled) {
     InstallResult res;
+
+    if (!ensureDir(dir)) {
+        res.error = "cannot access or create directory: " + dir;
+        return res;
+    }
 
     const uint64_t isoSize = fileSizeOf(isoPath);
     if (isoSize == 0) { res.error = "cannot open ISO: " + isoPath; return res; }
