@@ -57,12 +57,12 @@ Supporting evidence:
    header *and* the identifier to fit inside the record length; malformed
    images used to be able to make the identifier read run past the buffer
    (garbage entries; verified with an ASAN/UBSAN build + a hostile-ISO
-   regression test, `scripts/hostile_iso_test.py` pattern).
+   regression test, `tools/hostile_iso_test.py`).
 
 ## Analysis tooling
 
-The minidumps were decoded with small local tools kept in
-`/home/z/my-project/scripts/` (outside the repo): `parse_dmp.py`,
-`walk_dmp.py`, `dmp_regs.py` — exception record, module list, stack
-scan against `nm` symbols of the exact shipped exe, and the exception
-CONTEXT registers (which revealed the heap-manager signature).
+The minidumps were decoded with the small standalone parsers now shipped
+in [`tools/`](../tools/README.md): `parse_dmp.py`, `walk_dmp.py`,
+`dmp_regs.py` — exception record, module list, stack scan against `nm`
+symbols of the exact shipped exe, and the exception CONTEXT registers
+(which revealed the heap-manager signature).
