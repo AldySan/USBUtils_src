@@ -9,6 +9,8 @@
 
 #if defined(__unix__) || defined(__APPLE__)
 #  include <unistd.h>        // ::truncate
+#elif defined(_WIN32)
+#  include <io.h>             // _chsize / _chsize_s
 #endif
 
 namespace usbutils {
@@ -149,11 +151,13 @@ bool GameStream::truncate(uint64_t newSize) {
 
     FILE* f = std::fopen(path.c_str(), "r+b");
     if (!f) return false;
-    bool ok = usbutils::seek64(f, static_cast<int64_t>(want));
+    bool ok = usbutils::seek64(f, static_cast<int64_t>(want))
+            && std::fflush(f) == 0;
 #if defined(_MSC_VER)
     ok = ok && _chsize_s(_fileno(f), static_cast<long>(want)) == 0;
+#elif defined(_WIN32)
+    ok = ok && _chsize(_fileno(f), static_cast<long>(want)) == 0;
 #else
-    // Portable POSIX path; a plain ftruncate via fileno.
     ok = ok && ::truncate(path.c_str(), static_cast<off_t>(want)) == 0;
 #endif
     std::fclose(f);
