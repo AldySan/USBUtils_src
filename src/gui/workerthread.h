@@ -14,7 +14,7 @@ namespace usbutils {
 
 /// A QThread that runs a plain std::function in its run() override.
 ///
-/// Why not QThread::create()? Qt >= 6.9 implements QThread::create() on top
+/// Why not QThread::create()? Qt >= 6.8 implements QThread::create() on top
 /// of std::async(std::launch::deferred, ...). In our MinGW-w64 builds that
 /// machinery (libstdc++ _Deferred_state + winpthreads CRITICAL_SECTION)
 /// corrupted heap state and crashed the GUI ~3 s after startup, right when

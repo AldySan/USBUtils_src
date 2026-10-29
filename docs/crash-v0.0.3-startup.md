@@ -41,7 +41,7 @@ QTimer::singleShot(2500, this, &MainWindow::autoUpdateCheck);   // 2.5 s
 
 `QTimer::singleShot(2500)` + DNS + TLS + HTTP round-trip = the ~3 s
 delay the user measured. `autoUpdateCheck()` spawns the worker through
-`QThread::create(...)`. In Qt ≥ 6.9 that convenience function is
+`QThread::create(...)`. In Qt ≥ 6.8 that convenience function is
 implemented on top of `std::async(std::launch::deferred, ...)`
 (`qthread.h`, `#include <future> // for std::async`):
 
