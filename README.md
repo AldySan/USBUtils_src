@@ -25,14 +25,15 @@ binary** and is maintained as a modern, documented, testable codebase.
 | `usbutil.rcn` recovery database codec | ✅ |
 | `usbutil.ljs` game compatibility database | ✅ |
 | DNAS/IOPRP package (`usbutil.dna` + `.dni`) listing & patching | ✅ |
+| **PS2Load injection / removal** (marker record, MSYSTEM.CNF backup, reversible) | ✅ |
 | USB drive discovery (Windows / Linux / macOS) | ✅ |
 | CLI (`usbutils`) and Qt Widgets GUI (`usbutils-gui`) | ✅ |
 
 Not ported from the original: the ASPI/SPTI CD/DVD ripping + burning stack
-and the MicroUDF bootable-image builder (modern OSes burn ISOs natively);
-PS2Load injection is documented in `docs/formats/video_rip.md` but not
-implemented yet. The video rip is fully implemented — see
-[`docs/formats/video_rip.md`](docs/formats/video_rip.md).
+and the MicroUDF bootable-image builder (modern OSes burn ISOs natively).
+The video rip is fully implemented — see
+[`docs/formats/video_rip.md`](docs/formats/video_rip.md); PS2Load injection
+is documented in [`docs/formats/ps2load.md`](docs/formats/ps2load.md).
 
 ## Building
 
@@ -64,6 +65,9 @@ usbutils rip 0           -d /media/usb0      # turn videos off (reversible)
 usbutils rip 0           -d /media/usb0 --only MOVIES\\INTRO.PSS
 usbutils rip 0           -d /media/usb0 --no-backup   # destructive, like 2009
 usbutils unrip 0         -d /media/usb0      # turn videos back on
+usbutils ps2load 0       -d /media/usb0      # PS2Load status
+usbutils ps2load inject 0 -d /media/usb0 --elf data/PS2LOAD.ELF
+usbutils ps2load remove 0 -d /media/usb0      # undo the injection
 usbutils id              -n "Game Name"      # show the computed ul id
 usbutils dnas list       -p usbutil.dni
 usbutils dnas patch 0    -d /media/usb0 -p usbutil.dni --dna usbutil.dna -v 300

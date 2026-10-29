@@ -40,6 +40,20 @@ public:
     /// Returns false on any write error.
     bool write(uint64_t offset, const void* src, size_t n);
 
+    /// Append `n` bytes at the current end of the stream, growing the
+    /// LAST chunk file (never creates a new part — ul.cfg stays valid).
+    /// `limit` bounds how far the stream may grow: appends that would
+    /// push the last chunk past `parts * 1 GiB` are refused, because
+    /// loaders address data beyond that point through a chunk file the
+    /// game does not have. Returns the absolute offset the bytes were
+    /// written at, or UINT64_MAX on error.
+    uint64_t append(const void* src, size_t n, uint64_t limit);
+
+    /// Shrink the stream to `newSize` bytes by trimming the last chunk
+    /// file. Only cuts into the final chunk (real games never shrink
+    /// across a chunk boundary). Returns false on error.
+    bool truncate(uint64_t newSize);
+
     /// Total size of all chunk files of a game (sum of file sizes).
     static uint64_t totalSize(const std::string& dir, const std::string& idHex,
                               const std::string& serial, uint32_t parts);

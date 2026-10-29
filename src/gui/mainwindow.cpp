@@ -3,6 +3,7 @@
 
 #include "videoripdialog.h"
 #include "dnasdialog.h"
+#include "ps2loaddialog.h"
 
 #include "../core/ulcfg.h"
 #include "../core/installer.h"
@@ -86,6 +87,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         QAction* aRename = m.addAction(tr("Rename"));
         QAction* aVideos = m.addAction(tr("Videos (turn off / restore)..."));
         QAction* aDnas   = m.addAction(tr("DNAS patch..."));
+        QAction* aPs2    = m.addAction(tr("PS2Load options..."));
         m.addSeparator();
         QAction* aRemove = m.addAction(tr("Remove"));
         QAction* picked  = m.exec(gameList_->mapToGlobal(pos));
@@ -93,6 +95,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         else if (picked == aRename) renameSelected();
         else if (picked == aVideos) videoRipSelected();
         else if (picked == aDnas)   dnasPatchSelected();
+        else if (picked == aPs2)    ps2LoadSelected();
         else if (picked == aRemove) removeSelected();
     });
     root->addWidget(gameList_, 1);
@@ -122,16 +125,19 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     auto* row2 = new QHBoxLayout;
     auto* btnVideos  = new QPushButton(tr("Videos..."), this);
     auto* btnDnas    = new QPushButton(tr("DNAS patch..."), this);
+    auto* btnPs2     = new QPushButton(tr("PS2Load..."), this);
     auto* btnCheck   = new QPushButton(tr("Structure check"), this);
     auto* btnRecover = new QPushButton(tr("Recover games"), this);
     auto* btnAbout   = new QPushButton(tr("About"), this);
     connect(btnVideos,  &QPushButton::clicked, this, &MainWindow::videoRipSelected);
     connect(btnDnas,    &QPushButton::clicked, this, &MainWindow::dnasPatchSelected);
+    connect(btnPs2,     &QPushButton::clicked, this, &MainWindow::ps2LoadSelected);
     connect(btnCheck,   &QPushButton::clicked, this, &MainWindow::checkStructure);
     connect(btnRecover, &QPushButton::clicked, this, &MainWindow::recoverGames);
     connect(btnAbout,   &QPushButton::clicked, this, &MainWindow::about);
     row2->addWidget(btnVideos);
     row2->addWidget(btnDnas);
+    row2->addWidget(btnPs2);
     row2->addWidget(btnCheck);
     row2->addWidget(btnRecover);
     row2->addStretch(1);
@@ -452,6 +458,21 @@ void MainWindow::videoRipSelected() {
                        QString::fromStdString(r.serialStr()), r.parts, this);
     dlg.exec();
     refreshGames();      // sizes/state may have changed
+}
+
+void MainWindow::ps2LoadSelected() {
+    const int row = selectedRow();
+    if (row < 0 || !cfg_ || row >= (int)cfg_->records.size()) {
+        QMessageBox::warning(this, tr("USBUtils"), tr("Select a game."));
+        return;
+    }
+    const UlCfgRecord& r = cfg_->records[row];
+    const std::string id = gameIdHex(r.nameStr());
+    Ps2LoadDialog dlg(dir_, QString::fromStdString(r.nameStr()),
+                      QString::fromStdString(id),
+                      QString::fromStdString(r.serialStr()), r.parts, this);
+    dlg.exec();
+    refreshGames();      // the last chunk may have grown
 }
 
 void MainWindow::dnasPatchSelected() {

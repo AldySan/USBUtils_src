@@ -62,16 +62,10 @@ a backup.
 
 ## PS2LOAD.ELF injection
 
-`PS2LOAD.ELF` (218,252 bytes, MIPS ELF, shipped in `data/`) is the boot
-loader used to build bootable media. The original writes it into the
-ISO9660/MicroUDF image it constructs via its burning stack. The
-injection point selected in the UI ("PS2Load options") determines whether
-the ELF replaces the game's primary volume descriptor boot record or is
-added as `PS2LOAD.ELF;1` in the root directory.
-
-Not implemented in this reimplementation yet (the burning stack is out
-of scope — see README); the original ELF is kept in `data/` for the
-future ISO-level injector.
+Moved to its own document — see [`ps2load.md`](ps2load.md) for the
+full reconstruction of the "PS2Load injector v1.2" (marker record,
+MSYSTEM.CNF backup, PS2L_ name mangling, in-place SYSTEM.CNF rewrite,
+removal). Implemented by `core/ps2load.cpp`.
 
 ## IOPRP images (SCEE_DD)
 

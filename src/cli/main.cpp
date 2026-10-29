@@ -12,6 +12,9 @@
  *   usbutils videos <index>             -d <dir>
  *   usbutils rip <index>                -d <dir> [--all | --only p1,p2] [--no-backup]
  *   usbutils unrip <index>              -d <dir>
+ *   usbutils ps2load <index>            -d <dir>
+ *   usbutils ps2load inject <index>     -d <dir> [--elf <PS2LOAD.ELF>]
+ *   usbutils ps2load remove <index>     -d <dir>
  *   usbutils dnas list                  -p <pkg.dni>
  *   usbutils dnas patch <index>         -d <dir> -p <pkg.dni> --dna <pkg.dna> -v <ver>
  *   usbutils drives
@@ -25,6 +28,7 @@
 #include "../core/recovery.h"
 #include "../core/dnas.h"
 #include "../core/videorip.h"
+#include "../core/ps2load.h"
 #include "../core/gamedb.h"
 #include "../core/usbdevice.h"
 
@@ -56,6 +60,9 @@ static void usage() {
         "  usbutils videos <index>       -d <dir>\n"
         "  usbutils rip <index>          -d <dir> [--all | --only path,...] [--no-backup]\n"
         "  usbutils unrip <index>        -d <dir>   (restore ripped videos)\n"
+        "  usbutils ps2load <index>       -d <dir>   (show injection status)\n"
+        "  usbutils ps2load inject <index> -d <dir> [--elf <PS2LOAD.ELF>]\n"
+        "  usbutils ps2load remove <index> -d <dir>   (undo injection)\n"
         "  usbutils id                   -n \"Name\"   (show computed game id)\n"
         "  usbutils drives\n"
         "  usbutils dnas list            -p <usbutil.dni>\n"
@@ -82,7 +89,7 @@ static ProgressFn makeProgress() {
 }
 
 struct Args {
-    std::string cmd, dir, iso, name, out, dni, dna, ver, only;
+    std::string cmd, sub, dir, iso, name, out, dni, dna, ver, only, elf;
     int index = -1;
     bool all = false, apply = false, noBackup = false;
 };
@@ -103,6 +110,10 @@ static Args parse(int argc, char** argv) {
         else if (s == "--dna") a.dna = next();
         else if (s == "-v") a.ver = next();
         else if (s == "--only") a.only = next();
+        else if (s == "--elf") a.elf = next();
+        else if (a.cmd == "ps2load" && a.sub.empty()
+                 && (s == "inject" || s == "remove" || s == "status"))
+            a.sub = s;
         else if (s == "--all") a.all = true;
         else if (s == "--apply") a.apply = true;
         else if (s == "--no-backup") a.noBackup = true;
@@ -428,6 +439,72 @@ static int cmdDnas(const Args& a) {
     return 0;
 }
 
+static int cmdPs2Load(const Args& a) {
+    UlCfg cfg;
+    size_t index = 0;
+    std::string id;
+    if (!resolveGame(a, cfg, index, id)) return 2;
+    const UlCfgRecord& r = cfg.records[index];
+
+    if (a.sub == "inject") {
+        std::string elf = a.elf;
+        if (elf.empty()) {
+            for (const char* cand : {"PS2LOAD.ELF", "data/PS2LOAD.ELF"}) {
+                FILE* f = std::fopen(cand, "rb");
+                if (f) { std::fclose(f); elf = cand; break; }
+            }
+        }
+        if (elf.empty()) {
+            std::printf("ERROR: PS2LOAD.ELF not found next to the tool; "
+                        "pass it with --elf (shipped in data/)\n");
+            return 1;
+        }
+        std::printf("injecting from %s ...\n", elf.c_str());
+        const Ps2LoadResult res =
+            injectPs2Load(a.dir, id, r.serialStr(), r.parts, elf,
+                          makeProgress());
+        std::printf("\n");
+        if (!res.ok && res.appendedBytes == 0) {
+            std::printf("ERROR: %s\n", res.error.c_str());
+            return 1;
+        }
+        if (!res.error.empty())
+            std::printf("NOTE: %s\n", res.error.c_str());
+        std::printf("boot record '%s;1' injected (%s appended)\n",
+                    res.ps2lName.c_str(), humanSize(res.appendedBytes).c_str());
+        return 0;
+    }
+    if (a.sub == "remove") {
+        const Ps2LoadResult res =
+            removePs2Load(a.dir, id, r.serialStr(), r.parts, makeProgress());
+        if (!res.ok) { std::printf("ERROR: %s\n", res.error.c_str()); return 1; }
+        std::printf("PS2Load removed, SYSTEM.CNF restored\n");
+        return 0;
+    }
+
+    // status
+    const Ps2LoadInfo info = queryPs2Load(a.dir, id, r.serialStr(), r.parts);
+    if (!info.error.empty()) {
+        std::printf("ERROR: %s\n", info.error.c_str());
+        return 1;
+    }
+    switch (info.state) {
+    case Ps2LoadState::NotInjected:
+        std::printf("not injected (boot ELF '%s' -> would become '%s')\n",
+                    info.bootElf.c_str(), info.ps2lName.c_str());
+        break;
+    case Ps2LoadState::InjectedByTool:
+        std::printf("injected by the tool (boot '%s') - removable\n",
+                    info.ps2lName.c_str());
+        break;
+    case Ps2LoadState::InjectedManually:
+        std::printf("injected MANUALLY (marker LBA %u) - not removable here\n",
+                    info.markerLba);
+        break;
+    }
+    return 0;
+}
+
 int main(int argc, char** argv) {
     const Args a = parse(argc, argv);
     if (a.cmd.empty()) { usage(); return 2; }
@@ -448,6 +525,7 @@ int main(int argc, char** argv) {
     if (a.cmd == "rip")     return cmdRip(a);
     if (a.cmd == "unrip")   return cmdUnrip(a);
     if (a.cmd == "dnas")    return cmdDnas(a);
+    if (a.cmd == "ps2load") return cmdPs2Load(a);
     if (a.cmd == "id") {
         if (a.name.empty()) { usage(); return 2; }
         std::printf("%s\n", gameIdHex(a.name).c_str());

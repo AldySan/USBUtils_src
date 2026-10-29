@@ -27,6 +27,7 @@ add_library(usbutils_core STATIC
     src/core/recovery.cpp
     src/core/usbdevice.cpp
     src/core/videorip.cpp
+    src/core/ps2load.cpp
 )
 target_include_directories(usbutils_core PUBLIC src/core)
 target_compile_definitions(usbutils_core PUBLIC
@@ -59,6 +60,8 @@ if(USBUTILS_BUILD_GUI)
         src/gui/videoripdialog.h
         src/gui/dnasdialog.cpp
         src/gui/dnasdialog.h
+        src/gui/ps2loaddialog.cpp
+        src/gui/ps2loaddialog.h
     )
     target_link_libraries(usbutils-gui PRIVATE
         usbutils_core Qt${QT_VERSION_MAJOR}::Widgets)

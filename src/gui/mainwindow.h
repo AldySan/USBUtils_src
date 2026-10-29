@@ -49,6 +49,7 @@ private slots:
     void recoverGames();
     void videoRipSelected();
     void dnasPatchSelected();
+    void ps2LoadSelected();
     void about();
 
 private:
