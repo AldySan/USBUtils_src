@@ -28,7 +28,6 @@ const char* kApiUrl =
     "https://api.github.com/repos/AldySan/USBUtils_src/releases/latest";
 const char* kAtomUrl =
     "https://github.com/AldySan/USBUtils_src/releases.atom";
-const char* kUserAgent = "usbutils/" USBUTILS_VERSION;
 constexpr size_t kMaxResponse = 64 * 1024;    // release JSON is ~2-5 KB
 
 // -------------------------------------------------------------------------
@@ -44,7 +43,6 @@ constexpr size_t kMaxResponse = 64 * 1024;    // release JSON is ~2-5 KB
 std::string httpGet(const char* url, int timeoutSec) {
     // split "https://api.github.com/.../latest" into host + path
     std::string u = url;
-    const bool tls = u.rfind("https://", 0) == 0;
     const size_t scheme = u.find("://") + 3;
     const size_t slash = u.find('/', scheme);
     const std::string host = u.substr(scheme, slash - scheme);
@@ -92,6 +90,8 @@ std::string httpGet(const char* url, int timeoutSec) {
 }
 
 #else  // POSIX — prefer the curl binary, fall back to wget
+
+static const char* kUserAgent = "usbutils/" USBUTILS_VERSION;
 
 /// Run `cmd`, capture stdout (up to kMaxResponse). Empty string on failure.
 std::string capture(const std::string& cmd) {
