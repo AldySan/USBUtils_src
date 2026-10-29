@@ -59,13 +59,18 @@ function(usbutils_add_exe_icon TARGET DESC NAME)
         check_language(RC)
         if(CMAKE_RC_COMPILER)
             enable_language(RC)
-            target_compile_definitions(${TARGET} PRIVATE
-                USBUTILS_VER_MAJOR=${PROJECT_VERSION_MAJOR}
-                USBUTILS_VER_MINOR=${PROJECT_VERSION_MINOR}
-                USBUTILS_VER_PATCH=${PROJECT_VERSION_PATCH}
-                USBUTILS_RC_DESC="${DESC}"
-                USBUTILS_RC_NAME="${NAME}")
-            target_sources(${TARGET} PRIVATE res/usbutils.rc)
+            # bake version + icon path into a configured .rc (plain
+            # literals — windres needs no preprocessor string tricks)
+            set(USBUTILS_ICON_PATH "${CMAKE_CURRENT_SOURCE_DIR}/res/usbutils.ico")
+            set(USBUTILS_VER_MAJOR "${PROJECT_VERSION_MAJOR}")
+            set(USBUTILS_VER_MINOR "${PROJECT_VERSION_MINOR}")
+            set(USBUTILS_VER_PATCH "${PROJECT_VERSION_PATCH}")
+            set(USBUTILS_VER_STRING "${PROJECT_VERSION}")
+            set(USBUTILS_RC_DESC "${DESC}")
+            set(USBUTILS_RC_NAME "${NAME}")
+            set(USBUTILS_RC_OUT "${CMAKE_CURRENT_BINARY_DIR}/${TARGET}_icon.rc")
+            configure_file(res/usbutils.rc.in "${USBUTILS_RC_OUT}" @ONLY)
+            target_sources(${TARGET} PRIVATE "${USBUTILS_RC_OUT}")
         else()
             message(WARNING "No RC compiler found - '${TARGET}' gets no embedded icon")
         endif()
