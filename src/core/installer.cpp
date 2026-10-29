@@ -45,7 +45,8 @@ InstallResult installIso(const std::string& isoPath, const std::string& dir,
         return res;
     }
 
-    const uint64_t isoSize = fileSizeOf(isoPath);
+    const uint64_t isoSize = opt.sourceSize ? opt.sourceSize
+                                             : fileSizeOf(isoPath);
     if (isoSize == 0) { res.error = "cannot open ISO: " + isoPath; return res; }
 
     // ---- Serial (SYSTEM.CNF) --------------------------------------------

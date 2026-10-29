@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=USBUtils
+GenericName=PS2 USBExtreme manager
+Comment=Put PlayStation 2 games on a USB drive so the console can play them without discs.
+Exec=usbutils-gui
+Icon=usbutils
+Terminal=false
+Categories=Game;Utility;FileTools;
+Keywords=ps2;playstation;usb;usbextreme;usbadvance;games;iso;
+StartupWMClass=usbutils-gui

@@ -1,0 +1,42 @@
+// Windows application icon + version info for USBUtils.
+// Compiled into the executables by windres (MinGW) / rc.exe (MSVC).
+// The multi-size .ico covers 16..256 px (Explorer, taskbar, alt-tab).
+// USBUTILS_RC_DESC / USBUTILS_RC_NAME / USBUTILS_VER_* come from
+// target_compile_definitions() in CMakeLists.txt.
+#include <windows.h>
+
+#define USBUTILS_CONCAT3(a,b,c) a "." b "." c
+#define USBUTILS_STR2(x) #x
+#define USBUTILS_STR(x)  USBUTILS_STR2(x)
+#define USBUTILS_VER_STRING_ USBUTILS_CONCAT3(USBUTILS_STR(USBUTILS_VER_MAJOR), USBUTILS_STR(USBUTILS_VER_MINOR), USBUTILS_STR(USBUTILS_VER_PATCH))
+
+IDI_ICON1 ICON "res/usbutils.ico"
+
+1 VERSIONINFO
+FILEVERSION     USBUTILS_VER_MAJOR,USBUTILS_VER_MINOR,USBUTILS_VER_PATCH,0
+PRODUCTVERSION  USBUTILS_VER_MAJOR,USBUTILS_VER_MINOR,USBUTILS_VER_PATCH,0
+FILEFLAGSMASK   0x3fL
+FILEFLAGS       0x0L
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_APP
+FILESUBTYPE     0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName",      "AldySan / USBUtils contributors"
+            VALUE "FileDescription",  USBUTILS_RC_DESC
+            VALUE "FileVersion",      USBUTILS_VER_STRING_
+            VALUE "InternalName",     USBUTILS_RC_NAME
+            VALUE "LegalCopyright",   "MIT License (c) 2026 USBUtils contributors. Reverse-engineered from USBUtil v2.2 rev1.0 by ISEKO."
+            VALUE "OriginalFilename", USBUTILS_RC_NAME
+            VALUE "ProductName",      "USBUtils"
+            VALUE "ProductVersion",   USBUTILS_VER_STRING_
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

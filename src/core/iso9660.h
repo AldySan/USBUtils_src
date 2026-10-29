@@ -55,6 +55,13 @@ bool walkIso(const IsoReadFn& read,
 /// hybrid; the serial is always reachable via the ISO9660 path table).
 IsoInfo readIsoInfo(const std::string& path);
 
+/// Read just the Primary Volume Descriptor through a generic reader —
+/// used for raw CD/DVD device probing (the drive is opened by the caller;
+/// sector 16 is read to obtain volume id + data size in 2048-byte sectors).
+/// Returns false when the medium is not ISO9660.
+bool readPvd(const IsoReadFn& read, std::string* volumeId,
+             uint32_t* volumeSectors);
+
 /// Canonicalize a serial: strip ";1" / trailing ".1", pad with '0' to 11
 /// (normalization observed at 0x3A1072..0x3A109C).
 std::string normalizeSerial(const std::string& raw);
