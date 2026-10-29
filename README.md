@@ -95,10 +95,14 @@ Both the CLI and the GUI can check for new releases on their own
 (`usbutils check-update`; the GUI checks automatically at startup and
 shows a dialog when something newer is available).
 
-The GUI covers the same ground without a terminal: drive picker, game
-list (context menu, F2 rename, Del remove), install/export/rename/remove,
-structure check, recovery, the video-rip dialog and the DNAS patch dialog —
-all long operations run on worker threads with cancelable progress bars.
+The GUI covers the same ground without a terminal, built for non-technical
+users: a menu bar, plain-English grouped buttons with tooltips, a welcome
+guide, drive picker, game list (context menu, F2 rename, Del remove),
+install/copy/rename/remove, find-file, per-game file browser
+(extract/replace), check & repair (incl. code 666.66), recovery, drive
+report, the video-rip, DNAS and PS2Load dialogs — all long operations run
+on worker threads with cancelable progress bars. The GUI checks for
+updates automatically at startup and from the Help menu.
 
 ## Repository layout
 
