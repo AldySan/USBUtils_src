@@ -64,6 +64,10 @@ if(USBUTILS_BUILD_GUI)
         src/gui/dnasdialog.h
         src/gui/ps2loaddialog.cpp
         src/gui/ps2loaddialog.h
+        src/gui/finddialog.cpp
+        src/gui/finddialog.h
+        src/gui/gamefilesdialog.cpp
+        src/gui/gamefilesdialog.h
     )
     target_link_libraries(usbutils-gui PRIVATE
         usbutils_core Qt${QT_VERSION_MAJOR}::Widgets)
