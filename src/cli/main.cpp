@@ -86,6 +86,10 @@ static void usage() {
         "  usbutils copy <index|all> --to <dir> -d <dir>  (copy games to another drive)\n"
         "  usbutils move <index|all> --to <dir> -d <dir>  (move games to another drive)\n"
         "  usbutils report               -d <dir> [-o <file>] (drive report)\n"
+        "  usbutils sort                  -d <dir>   (sort games A-Z, save ul.cfg)\n"
+        "  usbutils clean                 -d <dir> [--apply]   (find left-over\n"
+        "                                                     files no game uses;\n"
+        "                                                     --apply deletes them)\n"
         "  usbutils fix                  -d <dir> [--apply]   (correct code 666.66)\n"
         "  usbutils check-update                                (look for a newer release)\n"
         "  usbutils --version\n"
@@ -284,6 +288,45 @@ static int cmdCheck(const Args& a) {
     if (bad) std::printf("%d problem(s)\n", bad);
     else     std::printf("structure OK (%zu games)\n", cfg.records.size());
     return bad ? 1 : 0;
+}
+
+static int cmdSort(const Args& a) {
+    if (a.dir.empty()) { usage(); return 2; }
+    size_t moved = 0;
+    if (!sortGames(a.dir, &moved)) {
+        std::printf("ERROR: could not write ul.cfg\n");
+        return 1;
+    }
+    if (moved == 0) std::printf("already sorted\n");
+    else            std::printf("sorted, %zu record(s) moved\n", moved);
+    return 0;
+}
+
+static int cmdClean(const Args& a) {
+    if (a.dir.empty()) { usage(); return 2; }
+    const DriveSpaceReport rep = scanDriveSpace(a.dir);
+    std::printf("games on drive        : %zu\n", rep.games);
+    std::printf("files used by games   : %zu (%s)\n",
+                rep.gameFiles, humanSize(rep.gameBytes).c_str());
+    std::printf("obsolete files        : %zu (%s)\n",
+                rep.obsoleteFiles, humanSize(rep.obsoleteBytes).c_str());
+    std::printf("files with size zero  : %zu\n", rep.zeroSizeFiles);
+    std::printf("current free space    : %s\n", humanSize(rep.freeBytes).c_str());
+    if (!rep.obsolete.empty()) {
+        std::printf("\nleft-over files no game uses:\n");
+        for (const std::string& n : rep.obsolete)
+            std::printf("  %s\n", n.c_str());
+        if (!a.apply) {
+            std::printf("\n(dry run - run again with --apply to delete them)\n");
+            return 1;
+        }
+        const int n = restoreSpace(a.dir, rep);
+        std::printf("\ndeleted %d file(s), %s reclaimed\n",
+                    n, humanSize(rep.obsoleteBytes).c_str());
+        return n == static_cast<int>(rep.obsoleteFiles) ? 0 : 1;
+    }
+    std::printf("\nnothing to clean\n");
+    return 0;
 }
 
 static int cmdRecover(const Args& a) {
@@ -784,6 +827,9 @@ int main(int argc, char** argv) {
     if (a.cmd == "copy")    return cmdCopyMove(a, false);
     if (a.cmd == "move")    return cmdCopyMove(a, true);
     if (a.cmd == "report")  return cmdReport(a);
+    if (a.cmd == "sort")    return cmdSort(a);
+    if (a.cmd == "clean" || a.cmd == "restore-space")
+        return cmdClean(a);
     if (a.cmd == "fix")     return cmdFix(a);
     if (a.cmd == "check-update" || a.cmd == "update-check")
         return cmdCheckUpdate();

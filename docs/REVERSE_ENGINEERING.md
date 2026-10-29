@@ -135,7 +135,24 @@ from the disassembly of `0x398738` / `0x398784`.
   in the core; the original's exact file-offset patching of GSV files
   was partially reconstructed and is documented in
   `docs/formats/video_rip.md`.
+* **"View/Edit ul.cfg" raw record editor**: deliberately left out — a
+  raw 64-byte-record editor invites corruption; every record field that
+  is safe to touch is editable through dedicated flows (rename, fix
+  666.66, recover).
+* **"Associate with..." shell file associations** (Windows-only):
+  a portable tool should not hijack file associations silently.
+* **"SHOW orders" list-order display toggle**: superseded by the
+  explicit `sort` command (the original's companion "Sorting" button).
+
+The remaining original list-management features were ported late in the
+project: **Sorting** ("Sort the list of games in memory and disk" — a
+stable, case-insensitive name sort of the ul.cfg records, then saved
+back to disk) and **Restore space** ("Rest. Spc." / the Disk Status
+INFORMATION panel — scans the `ul.*` game area for files no record
+references, reports files-in-games / obsolete / space-not-occupied /
+zero-size / free-space, and deletes the obsolete files on confirmation;
+video-rip sidecars of live games are protected).
 
 Everything needed to manage USBExtreme-format game libraries (install,
-rename, delete, recover, repair, DNAS/IOPRP patch, PS2Load injection) is
-implemented in this repository.
+rename, delete, recover, repair, DNAS/IOPRP patch, PS2Load injection,
+sort, restore-space) is implemented in this repository.

@@ -154,6 +154,47 @@ std::vector<SerialFix> fixBrokenSerials(const std::string& dir, UlCfg& cfg,
                                         bool apply);
 
 // ---------------------------------------------------------------------------
+// Sorting (original "Sorting" button: "Sort the list of games in memory
+// and disk")
+// ---------------------------------------------------------------------------
+
+/// Sort the game list alphabetically and save ul.cfg. Comparison is
+/// case-insensitive on the display name (ties keep their relative disk
+/// order — a stable sort, matching the original's in-memory list sort).
+/// Records that are invalid/trailing garbage sink to the end so they never
+/// hide real games. Returns false when the sorted ul.cfg could not be
+/// written; `movedOut` (optional) reports how many records changed index.
+bool sortGames(const std::string& dir, size_t* movedOut = nullptr);
+
+// ---------------------------------------------------------------------------
+// Restore space (original "Rest. Spc." / "Disk Status INFORMATION" panel)
+// ---------------------------------------------------------------------------
+
+/// One entry per file on the drive that belongs to the USBExtreme game
+/// area (name starting with "ul.", excluding ul.cfg itself).
+struct DriveSpaceReport {
+    size_t      games = 0;          ///< records in ul.cfg
+    size_t      gameFiles = 0;      ///< chunk files present that records use
+    uint64_t    gameBytes = 0;      ///< bytes in those files
+    size_t      obsoleteFiles = 0;  ///< "ul.*" files no record uses
+    uint64_t    obsoleteBytes = 0;  ///< "space not occupied" (reclaimable)
+    size_t      zeroSizeFiles = 0;  ///< "ul.*" files with size 0 (broken)
+    uint64_t    freeBytes = 0;      ///< "current free space" on the volume
+    std::vector<std::string> obsolete;  ///< obsolete file names (report/confirm)
+};
+
+/// Scan the drive like the original's INFORMATION panel: files in games,
+/// obsolete files, space not occupied, current free space and files with
+/// size at zero. Video-rip sidecars ("<first chunk>.rip") of existing
+/// games count as game files, so ripped games are never reported as junk.
+DriveSpaceReport scanDriveSpace(const std::string& dir);
+
+/// "Proceed to restore space": delete the obsolete files found by the
+/// scan. Returns the number of files actually removed (0 when none were
+/// present or deletions failed — check scanDriveSpace afterwards).
+int restoreSpace(const std::string& dir, const DriveSpaceReport& rep);
+
+// ---------------------------------------------------------------------------
 // General report
 // ---------------------------------------------------------------------------
 

@@ -53,6 +53,8 @@ private slots:
     void checkStructure();          ///< structure check + broken serials
     void fixBrokenSerials();        ///< "Correct code 666.66"
     void recoverGames();
+    void sortGamesList();           ///< original "Sorting" button
+    void cleanDriveSpace();         ///< original "Restore space" (Rest. Spc.)
     void findFile();
     void gameFilesSelected();
     void driveReport();

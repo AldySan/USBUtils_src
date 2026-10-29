@@ -15,9 +15,11 @@
 
 #include <cstdio>
 #include <cstring>
+#include <cctype>
 #include <ctime>
 #include <algorithm>
 #include <filesystem>
+#include <set>
 
 namespace fs = std::filesystem;
 
@@ -26,6 +28,14 @@ namespace usbutils {
 namespace {
 
 constexpr size_t kCopyBuffer = 8u << 20;   // 8 MiB, same as WriteChunkFile
+
+/// ASCII-only lower-case (locale independent, byte-wise).
+std::string toLowerAscii(const std::string& s) {
+    std::string out = s;
+    for (char& c : out)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return out;
+}
 
 /// The broken serial marker written by some third-party tools (string
 /// @0x39B854; compared against 11 chars of the game-list code column).
@@ -539,6 +549,142 @@ std::string generateReport(const std::string& dir, const UlCfg& cfg) {
     }
 
     return out;
+}
+
+// ---------------------------------------------------------------------------
+// Sorting ("Sort the list of games in memory and disk")
+// ---------------------------------------------------------------------------
+
+namespace {
+
+int icmpAscii(const std::string& a, const std::string& b) {
+    const size_t n = std::min(a.size(), b.size());
+    for (size_t i = 0; i < n; ++i) {
+        int ca = static_cast<unsigned char>(a[i]);
+        int cb = static_cast<unsigned char>(b[i]);
+        if (std::isalpha(ca)) ca = std::tolower(ca);
+        if (std::isalpha(cb)) cb = std::tolower(cb);
+        if (ca != cb) return ca < cb ? -1 : 1;
+    }
+    if (a.size() != b.size()) return a.size() < b.size() ? -1 : 1;
+    return 0;
+}
+
+} // namespace
+
+bool sortGames(const std::string& dir, size_t* movedOut) {
+    UlCfg cfg;
+    if (!cfg.load(dir)) return false;
+
+    const std::vector<UlCfgRecord> before = cfg.records;
+    std::stable_sort(cfg.records.begin(), cfg.records.end(),
+                     [](const UlCfgRecord& a, const UlCfgRecord& b) {
+                         // invalid/trailing garbage sinks to the end
+                         if (a.valid() != b.valid()) return b.valid();
+                         const int c = icmpAscii(a.nameStr(), b.nameStr());
+                         if (c != 0) return c < 0;
+                         return icmpAscii(a.serialStr(), b.serialStr()) < 0;
+                     });
+
+    if (movedOut) {
+        *movedOut = 0;
+        for (size_t i = 0; i < before.size(); ++i)
+            if (i >= cfg.records.size() ||
+                std::memcmp(&before[i], &cfg.records[i], UlCfgRecord::kSize))
+                ++*movedOut;
+    }
+
+    // Nothing to do when already sorted — skip the rewrite (the original
+    // still rewrites, but skipping keeps timestamps stable).
+    bool identical = before.size() == cfg.records.size();
+    for (size_t i = 0; identical && i < before.size(); ++i)
+        identical = std::memcmp(&before[i], &cfg.records[i],
+                                 UlCfgRecord::kSize) == 0;
+    if (identical) return true;
+    return cfg.save();
+}
+
+// ---------------------------------------------------------------------------
+// Restore space ("Rest. Spc." / Disk Status INFORMATION panel)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+bool startsWithUlDot(const std::string& name) {
+    // "ul." prefix, ASCII case-insensitive (Windows drives are case-blind)
+    return name.size() > 3
+        && (name[0] == 'u' || name[0] == 'U')
+        && (name[1] == 'l' || name[1] == 'L')
+        && name[2] == '.';
+}
+
+} // namespace
+
+DriveSpaceReport scanDriveSpace(const std::string& dir) {
+    DriveSpaceReport rep;
+    rep.games = 0;
+
+    UlCfg cfg;
+    const bool haveCfg = cfg.load(dir);
+    if (haveCfg) rep.games = cfg.records.size();
+
+    // Files a game claims: its chunk files + the video-rip sidecar.
+    std::set<std::string> referenced;   // lower-cased names
+    if (haveCfg) {
+        for (const UlCfgRecord& r : cfg.records) {
+            if (!r.valid()) continue;
+            const std::string id = gameIdHex(r.nameStr());
+            for (uint32_t i = 0; i < r.parts; ++i) {
+                std::string n = chunkFileName(id, r.serialStr(), i);
+                referenced.insert(toLowerAscii(n));
+            }
+            std::string rip = chunkFileName(id, r.serialStr(), 0) + ".rip";
+            referenced.insert(toLowerAscii(rip));
+        }
+    }
+
+    std::error_code ec;
+    for (fs::directory_iterator it(dir, ec), endIt; !ec && it != endIt;
+         it.increment(ec)) {
+        const std::string name = it->path().filename().string();
+        if (!startsWithUlDot(name)) continue;       // not game-area file
+        if (toLowerAscii(name) == "ul.cfg") continue;
+
+        bool isFile = false;
+        uint64_t sz = 0;
+        {
+            std::error_code ec2, ec3;
+            if (it->is_regular_file(ec2)) {
+                isFile = true;
+                const auto s = it->file_size(ec3);
+                if (!ec3) sz = static_cast<uint64_t>(s);
+            }
+        }
+        if (!isFile) continue;   // a directory named "ul.*" is not game data
+
+        if (referenced.count(toLowerAscii(name))) {
+            ++rep.gameFiles;
+            rep.gameBytes += sz;
+        } else {
+            ++rep.obsoleteFiles;
+            rep.obsoleteBytes += sz;
+            rep.obsolete.push_back(name);
+        }
+        if (sz == 0) ++rep.zeroSizeFiles;
+    }
+
+    uint64_t freeB = 0, totalB = 0;
+    if (fsSpace(dir, freeB, totalB)) rep.freeBytes = freeB;
+    return rep;
+}
+
+int restoreSpace(const std::string& dir, const DriveSpaceReport& rep) {
+    int removed = 0;
+    for (const std::string& name : rep.obsolete) {
+        std::error_code ec;
+        if (fs::remove(fs::path(dir) / name, ec) && !ec) ++removed;
+    }
+    return removed;
 }
 
 } // namespace usbutils
