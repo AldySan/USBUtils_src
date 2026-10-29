@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(USBUtils VERSION 0.0.2 LANGUAGES CXX)
+project(USBUtils VERSION 0.0.3 LANGUAGES CXX)
 
 option(USBUTILS_BUILD_GUI "Build the Qt Widgets GUI" ON)
 option(USBUTILS_BUILD_TESTS "Build unit tests" ON)
@@ -29,12 +29,13 @@ add_library(usbutils_core STATIC
     src/core/videorip.cpp
     src/core/ps2load.cpp
     src/core/gameops.cpp
+    src/core/update.cpp
 )
 target_include_directories(usbutils_core PUBLIC src/core)
 target_compile_definitions(usbutils_core PUBLIC
     USBUTILS_VERSION="${PROJECT_VERSION}")
 if(WIN32)
-    target_link_libraries(usbutils_core PUBLIC user32)
+    target_link_libraries(usbutils_core PUBLIC user32 winhttp)
 endif()
 
 # ---------------------------------------------------------------------------

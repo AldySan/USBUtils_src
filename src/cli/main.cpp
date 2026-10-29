@@ -27,6 +27,7 @@
  *   usbutils move <index|all> --to <d>  -d <dir>
  *   usbutils report                     -d <dir> [-o <file>]
  *   usbutils fix                        -d <dir> [--apply]
+ *   usbutils check-update
  */
 #include "../core/ulcfg.h"
 #include "../core/installer.h"
@@ -40,6 +41,7 @@
 #include "../core/gameops.h"
 #include "../core/gamedb.h"
 #include "../core/usbdevice.h"
+#include "../core/update.h"
 
 #ifndef USBUTILS_VERSION
 #define USBUTILS_VERSION "0.0.1"
@@ -85,6 +87,7 @@ static void usage() {
         "  usbutils move <index|all> --to <dir> -d <dir>  (move games to another drive)\n"
         "  usbutils report               -d <dir> [-o <file>] (drive report)\n"
         "  usbutils fix                  -d <dir> [--apply]   (correct code 666.66)\n"
+        "  usbutils check-update                                (look for a newer release)\n"
         "  usbutils --version\n"
         "\n"
         "install also accepts a device path (e.g. /dev/sr0 on Linux) to\n"
@@ -733,6 +736,26 @@ static int cmdFix(const Args& a) {
     return 0;
 }
 
+static int cmdCheckUpdate() {
+    std::printf("Checking for updates...\n");
+    const ReleaseInfo rel = fetchLatestRelease();
+    if (!rel.ok) {
+        std::printf("Could not check for updates: %s\n", rel.error.c_str());
+        return 1;
+    }
+    if (isVersionNewer(USBUTILS_VERSION, rel.tag)) {
+        const std::string tag = !rel.tag.empty() && rel.tag[0] == 'v'
+                                    ? rel.tag.substr(1) : rel.tag;
+        std::printf("A new version is available: %s (you have %s)\n"
+                    "Get it at: %s\n",
+                    tag.c_str(), USBUTILS_VERSION, rel.url.c_str());
+        return 0;
+    }
+    std::printf("You are up to date. USBUtils %s is the latest version.\n",
+                USBUTILS_VERSION);
+    return 0;
+}
+
 int main(int argc, char** argv) {
     const Args a = parse(argc, argv);
     if (a.cmd.empty()) { usage(); return 2; }
@@ -762,6 +785,8 @@ int main(int argc, char** argv) {
     if (a.cmd == "move")    return cmdCopyMove(a, true);
     if (a.cmd == "report")  return cmdReport(a);
     if (a.cmd == "fix")     return cmdFix(a);
+    if (a.cmd == "check-update" || a.cmd == "update-check")
+        return cmdCheckUpdate();
     if (a.cmd == "id") {
         if (a.name.empty()) { usage(); return 2; }
         std::printf("%s\n", gameIdHex(a.name).c_str());
