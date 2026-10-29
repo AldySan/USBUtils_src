@@ -151,10 +151,10 @@ std::string normalizeSerial(const std::string& raw) {
     return s;
 }
 
-namespace {
-
 /// Extract the boot ELF file name from a SYSTEM.CNF "BOOT2 = ..." line.
 /// Handles both "cdrom0:\SLUS_202.65;1" and bare "SLUS_202.65" forms.
+/// (Exported for gameops.cpp — the "Correct code 666.66" fixer needs to
+/// re-derive a game's serial from its chunk stream.)
 std::string bootElfFromCnf(const std::string& cnf) {
     const size_t b = cnf.find("BOOT2");
     if (b == std::string::npos) return {};
@@ -181,8 +181,6 @@ std::string bootElfFromCnf(const std::string& cnf) {
     if (cut != std::string::npos) val = val.substr(cut + 1);
     return val;
 }
-
-} // namespace
 
 IsoInfo readIsoInfo(const std::string& path) {
     IsoInfo info;

@@ -11,6 +11,8 @@
  *   8. end-to-end install/export on a generated fake ISO
  *   9. video rip / restore round-trip with sidecar backup
  *  10. exact IOPRP location (DNAS patch target)
+ * 11. gameops: find / files / extract / inject / copy / move /
+ *     correct-code-666.66 / general report
  */
 #include "ulcfg.h"
 #include "ulid.h"
@@ -22,6 +24,7 @@
 #include "dnas.h"
 #include "videorip.h"
 #include "ps2load.h"
+#include "gameops.h"
 #include "port.h"
 
 #include <cstdio>
@@ -619,6 +622,213 @@ static void testPs2Load() {
     fs::remove_all(base);
 }
 
+// ---------------------------------------------------------------------------
+// 11. gameops: find / files / extract / inject / copy / move / 666.66 / report
+// ---------------------------------------------------------------------------
+
+static void testGameOps() {
+    // ---- wildcard matcher --------------------------------------------------
+    CHECK(matchPattern("INTRO.PSS", "*.PSS"));
+    CHECK(matchPattern("intro.pss", "INTRO*"));
+    CHECK(matchPattern("FILE.TXT", "F?LE.*"));
+    CHECK(matchPattern("FILE.TXT", "FILE.TXT"));
+    CHECK(!matchPattern("FILE.TXT", "*.BIN"));
+    CHECK(matchPattern("MOVIES\\INTRO.PSS", "*.PSS"));
+    CHECK(matchPattern("anything", ""));
+
+    const fs::path base = fs::temp_directory_path() / "usbutils_gameops";
+    fs::remove_all(base);
+    fs::create_directories(base);
+    const fs::path iso = base / "game.iso";
+    writeTestIso(iso, "SLUS_202.65", 2048 * 2);
+
+    InstallOptions opt;
+    opt.gameName = "Ops Game";
+    const InstallResult r = installIso(iso.string(), base.string(), opt);
+    CHECK(r.ok);
+    if (!r.ok) { fs::remove_all(base); return; }
+    const std::string id = r.idHex, serial = "SLUS_202.65";
+
+    // ---- file listing ------------------------------------------------------
+    const auto files = listGameFiles(base.string(), id, serial, 1);
+    CHECK(files.size() == 3);          // SYSTEM.CNF, MOVIES\INTRO.PSS, IOPRP300.IMG
+    bool hasCnf = false, hasPss = false, hasIoprp = false;
+    for (const IsoEntry& e : files) {
+        if (e.name == "SYSTEM.CNF")  hasCnf   = e.size == 96;
+        if (e.name == "INTRO.PSS")   hasPss   = e.size == 3 * 2048 && e.lba == 22;
+        if (e.name == "IOPRP300.IMG") hasIoprp = e.size == 256;
+    }
+    CHECK(hasCnf && hasPss && hasIoprp);
+
+    // ---- find in games -----------------------------------------------------
+    UlCfg cfg;
+    CHECK(cfg.load(base.string()));
+    auto hits = findFileInGames(base.string(), cfg, "*.pss");
+    CHECK(hits.size() == 1);
+    CHECK(hits.size() == 1 && hits[0].entry.path == "MOVIES\\INTRO.PSS");
+    hits = findFileInGames(base.string(), cfg, "*", 256);   // by size
+    CHECK(hits.size() == 1);
+    CHECK(hits.size() == 1 && hits[0].entry.name == "IOPRP300.IMG");
+    hits = findFileInGames(base.string(), cfg, "*.bin");
+    CHECK(hits.empty());
+
+    // ---- extract one file --------------------------------------------------
+    const IsoEntry* pss = nullptr;
+    for (const IsoEntry& e : files)
+        if (e.name == "INTRO.PSS") { pss = &e; break; }
+    CHECK(pss != nullptr);
+    if (pss) {
+        CHECK(extractGameFile(base.string(), id, serial, 1, *pss,
+                              (base / "intro.pss").string()));
+        // compare against the same byte range of the source ISO
+        FILE* f = std::fopen(iso.string().c_str(), "rb");
+        CHECK(f != nullptr);
+        if (f) {
+            std::vector<uint8_t> expect(pss->size);
+            usbutils::seek64(f, uint64_t(pss->lba) * 2048);
+            CHECK(std::fread(expect.data(), 1, expect.size(), f) == expect.size());
+            std::fclose(f);
+            FILE* g = std::fopen((base / "intro.pss").string().c_str(), "rb");
+            CHECK(g != nullptr);
+            if (g) {
+                std::vector<uint8_t> got(pss->size);
+                CHECK(std::fread(got.data(), 1, got.size(), g) == got.size());
+                std::fclose(g);
+                CHECK(std::memcmp(expect.data(), got.data(), expect.size()) == 0);
+            }
+        }
+    }
+
+    // ---- copy to another drive ---------------------------------------------
+    const fs::path dest = fs::temp_directory_path() / "usbutils_gameops_dest";
+    fs::remove_all(dest);
+    fs::create_directories(dest);
+    {
+        UlCfg src;
+        CHECK(src.load(base.string()));
+        const CopyResult cr = copyGame(base.string(), src, 0, dest.string(), false);
+        CHECK(cr.ok);
+        CHECK(cr.copiedBytes == gameTotalSize(base.string(), id, serial, 1));
+        CHECK(fs::exists(dest / ("ul." + id + "." + serial + ".00")));
+
+        UlCfg dcfg;
+        CHECK(dcfg.load(dest.string()));
+        CHECK(dcfg.records.size() == 1);
+        CHECK(dcfg.records[0].nameStr() == "Ops Game");
+
+        // exporting from the destination reproduces the source image
+        CHECK(exportIso(dest.string(), dcfg.records[0],
+                        (dest / "back.iso").string()));
+        CHECK(filesEqual(iso, dest / "back.iso"));
+
+        // copying the same game again must collide
+        const CopyResult cr2 = copyGame(base.string(), src, 0, dest.string(), false);
+        CHECK(!cr2.ok);
+    }
+
+    // ---- inject (same-size replace + mismatch rejection), on the copy ----
+    {
+        std::vector<uint8_t> repl(3 * 2048, 0xCC);
+        FILE* f = std::fopen((dest / "repl.bin").string().c_str(), "wb");
+        std::fwrite(repl.data(), 1, repl.size(), f);
+        std::fclose(f);
+        const InjectResult ir = injectGameFile(dest.string(), id, serial, 1,
+                                               "movies/intro.pss",
+                                               (dest / "repl.bin").string());
+        CHECK(ir.ok);
+        CHECK(ir.bytes == 3 * 2048);
+
+        // wrong size must be refused
+        std::vector<uint8_t> bad(128, 0);
+        f = std::fopen((dest / "bad.bin").string().c_str(), "wb");
+        std::fwrite(bad.data(), 1, bad.size(), f);
+        std::fclose(f);
+        const InjectResult ir2 = injectGameFile(dest.string(), id, serial, 1,
+                                                "MOVIES\\INTRO.PSS",
+                                                (dest / "bad.bin").string());
+        CHECK(!ir2.ok);
+        CHECK(ir2.error.find("size mismatch") != std::string::npos);
+
+        // the injected bytes are really in the stream now
+        GameStream gs;
+        CHECK(gs.open(dest.string(), id, serial, 1));
+        std::vector<uint8_t> got(3 * 2048);
+        CHECK(gs.read(22ull * 2048, got.data(), got.size()) == got.size());
+        bool allCC = true;
+        for (uint8_t b : got) if (b != 0xCC) { allCC = false; break; }
+        CHECK(allCC);
+    }
+
+    // ---- move to a third drive ---------------------------------------------
+    const fs::path dest2 = fs::temp_directory_path() / "usbutils_gameops_dest2";
+    fs::remove_all(dest2);
+    fs::create_directories(dest2);
+    {
+        UlCfg src;
+        CHECK(src.load(base.string()));
+        CHECK(src.records.size() == 1);
+        const CopyResult cr = copyGame(base.string(), src, 0, dest2.string(), true);
+        CHECK(cr.ok);
+        CHECK(src.records.empty());                       // record removed
+        CHECK(!fs::exists(base / ("ul." + id + "." + serial + ".00")));
+        CHECK(fs::exists(dest2 / ("ul." + id + "." + serial + ".00")));
+    }
+
+    // ---- correct code 666.66 -------------------------------------------------
+    // simulate a record corrupted by a third-party tool: serial replaced by
+    // the magic broken marker and the chunk file renamed accordingly
+    const std::string brokenSerial = "666.66";
+    {
+        UlCfg src;
+        CHECK(src.load(dest2.string()));
+        CHECK(src.records.size() == 1);
+        const std::string gid = gameIdHex(src.records[0].nameStr());
+        std::error_code ec;
+        fs::rename(dest2 / ("ul." + gid + "." + serial + ".00"),
+                   dest2 / ("ul." + gid + "." + brokenSerial + ".00"), ec);
+        CHECK(!ec);
+        src.records[0].setSerial(brokenSerial);
+        CHECK(src.save());
+
+        // dry run: sees the break, proposes the real serial
+        UlCfg dry;
+        CHECK(dry.load(dest2.string()));
+        const auto fixes = fixBrokenSerials(dest2.string(), dry, false);
+        CHECK(fixes.size() == 1);
+        CHECK(fixes.size() == 1 && fixes[0].newSerial == "SLUS_202.65");
+        CHECK(fixes.size() == 1 && !fixes[0].applied);
+        CHECK(fs::exists(dest2 / ("ul." + gid + "." + brokenSerial + ".00")));
+
+        // apply: serial fixed, chunks renamed back
+        const auto fixes2 = fixBrokenSerials(dest2.string(), dry, true);
+        CHECK(fixes2.size() == 1 && fixes2[0].applied);
+        CHECK(dry.records[0].serialStr() == "SLUS_202.65");
+        CHECK(fs::exists(dest2 / ("ul." + gid + "." + serial + ".00")));
+        CHECK(!fs::exists(dest2 / ("ul." + gid + "." + brokenSerial + ".00")));
+        CHECK(checkStructure(dest2.string(), gid, serial, 1).ok());
+
+        // and the data is untouched
+        CHECK(exportIso(dest2.string(), dry.records[0],
+                        (dest2 / "back2.iso").string()));
+        CHECK(filesEqual(iso, dest2 / "back2.iso"));
+    }
+
+    // ---- general report -------------------------------------------------------
+    {
+        UlCfg src;
+        CHECK(src.load(dest2.string()));
+        const std::string rep = generateReport(dest2.string(), src);
+        CHECK(rep.find("Games total: 1") != std::string::npos);
+        CHECK(rep.find("Ops Game") != std::string::npos);
+        CHECK(rep.find("structure OK") != std::string::npos);
+        CHECK(rep.find("none") != std::string::npos);       // broken serials
+    }
+
+    fs::remove_all(base);
+    fs::remove_all(dest);
+    fs::remove_all(dest2);
+}
+
 int main() {
     std::printf("== USBUtils core tests ==\n");
     testCrcId();
@@ -633,6 +843,7 @@ int main() {
     testVideoRip();
     testIoprpLocate();
     testPs2Load();
+    testGameOps();
     std::printf(g_failed ? "\n%d FAILURE(S)\n" : "\nALL TESTS PASSED\n", g_failed);
     return g_failed ? 1 : 0;
 }

@@ -26,11 +26,18 @@ binary** and is maintained as a modern, documented, testable codebase.
 | `usbutil.ljs` game compatibility database | ✅ |
 | DNAS/IOPRP package (`usbutil.dna` + `.dni`) listing & patching | ✅ |
 | **PS2Load injection / removal** (marker record, MSYSTEM.CNF backup, reversible) | ✅ |
+| **Find file in games** (wildcard + size search across every game) | ✅ |
+| **Copy / move games to another drive** (chunk stream + record, sidecar carried) | ✅ |
+| **General report** (drive, games, structure evaluation, broken codes) | ✅ |
+| **Correct code 666.66** (fix broken serials, re-derived from SYSTEM.CNF) | ✅ |
+| **Per-game file explore / extract / inject** (same-size in-place replace) | ✅ |
 | USB drive discovery (Windows / Linux / macOS) | ✅ |
 | CLI (`usbutils`) and Qt Widgets GUI (`usbutils-gui`) | ✅ |
 
 Not ported from the original: the ASPI/SPTI CD/DVD ripping + burning stack
 and the MicroUDF bootable-image builder (modern OSes burn ISOs natively).
+Creating a game straight from a disc works on Linux/macOS by passing the
+device path (`usbutils install /dev/sr0 ...`).
 The video rip is fully implemented — see
 [`docs/formats/video_rip.md`](docs/formats/video_rip.md); PS2Load injection
 is documented in [`docs/formats/ps2load.md`](docs/formats/ps2load.md).
@@ -71,6 +78,15 @@ usbutils ps2load remove 0 -d /media/usb0      # undo the injection
 usbutils id              -n "Game Name"      # show the computed ul id
 usbutils dnas list       -p usbutil.dni
 usbutils dnas patch 0    -d /media/usb0 -p usbutil.dni --dna usbutil.dna -v 300
+usbutils find "*.pss"    -d /media/usb0      # search files inside every game
+usbutils find "*"        -d /media/usb0 --size 33554432
+usbutils files 0         -d /media/usb0      # list one game's file tree
+usbutils extract 0 --path MOVIES\\INTRO.PSS -d /media/usb0 -o /tmp/
+usbutils inject 0 --path SYSTEM.CNF --file new.cnf -d /media/usb0
+usbutils copy 0 --to /media/usb1 -d /media/usb0   # copy game to 2nd drive
+usbutils move all --to /media/usb1 -d /media/usb0 # move every game over
+usbutils report          -d /media/usb0 -o report.txt
+usbutils fix             -d /media/usb0 --apply  # correct code 666.66
 usbutils --version
 ```
 

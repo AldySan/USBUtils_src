@@ -59,4 +59,9 @@ IsoInfo readIsoInfo(const std::string& path);
 /// (normalization observed at 0x3A1072..0x3A109C).
 std::string normalizeSerial(const std::string& raw);
 
+/// Extract the boot ELF file name from a SYSTEM.CNF "BOOT2 = ..." line
+/// (ParseSystemCnf @0x3A0F10). Handles "cdrom0:\SLUS_202.65;1" and bare
+/// "SLUS_202.65" forms. Empty when no BOOT2 line exists.
+std::string bootElfFromCnf(const std::string& cnf);
+
 } // namespace usbutils
