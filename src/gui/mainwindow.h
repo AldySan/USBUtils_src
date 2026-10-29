@@ -11,6 +11,7 @@
 #include <QMainWindow>
 #include <QString>
 #include <QList>
+#include <QPointer>
 #include <functional>
 #include <memory>
 
@@ -109,6 +110,6 @@ private:
     std::unique_ptr<usbutils::UlCfg> cfg_;
     int busyJobs_ = 0;
     bool updatePending_ = false;             ///< an update dialog is showing
-    QThread* updateThread_ = nullptr;        ///< in-flight startup update check
+    QPointer<QThread> updateThread_;          ///< in-flight startup update check (self-deleting; QPointer nulls on deletion)
     QString lastUpdateCheck_;                ///< for View current config
 };

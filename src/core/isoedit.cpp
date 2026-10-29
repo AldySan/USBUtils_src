@@ -239,7 +239,12 @@ bool IsoImageDoc::open(const std::string& path) {
             const size_t recOff = off;
             off += recLen;
 
+            // Sanity: header + identifier must fit inside the record, or a
+            // malformed image makes the identifier read below run past the
+            // buffer.
+            if (recLen < 34) continue;
             const uint8_t nameLen = dir[recOff + 32];
+            if (size_t(nameLen) + 33 > recLen) continue;
             if (nameLen == 1 && dir[recOff + 33] < 2) continue;   // "." / ".."
 
             std::string ident(reinterpret_cast<const char*>(&dir[recOff + 33]),
