@@ -2,6 +2,7 @@
 #include "ps2loaddialog.h"
 
 #include "../core/gamefile.h"
+#include "workerthread.h"
 
 #include <QLabel>
 #include <QLineEdit>
@@ -49,7 +50,7 @@ QString defaultElfPath() {
 template <typename F>
 auto runOnThread(F&& fn) -> decltype(fn()) {
     decltype(fn()) result;
-    QThread* th = QThread::create([&result, &fn]() { result = fn(); });
+    QThread* th = new usbutils::WorkerThread([&result, &fn]() { result = fn(); });
     th->start();
     while (th->isRunning())     // process events so the dialog stays alive
         QCoreApplication::processEvents(QEventLoop::AllEvents, 50);

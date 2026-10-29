@@ -17,6 +17,7 @@
 #include "../core/gameops.h"
 #include "../core/update.h"
 #include "../core/port.h"
+#include "workerthread.h"
 
 #include <QComboBox>
 #include <QListWidget>
@@ -236,6 +237,15 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     QTimer::singleShot(2500, this, &MainWindow::autoUpdateCheck);
 }
 
+MainWindow::~MainWindow() {
+    // The startup update check captures `this`; if it is still talking to
+    // GitHub while the window is being destroyed, wait for it to finish
+    // before ~QObject runs. 60 s covers the worst-case HTTP timeout chain
+    // (two requests x four 10 s WinHTTP timeouts + DNS) with margin.
+    if (updateThread_ && updateThread_->isRunning())
+        updateThread_->wait(60000);
+}
+
 void MainWindow::buildMenus() {
     // ---- File --------------------------------------------------------------
     QMenu* mFile = menuBar()->addMenu(tr("&File"));
@@ -365,7 +375,7 @@ void MainWindow::runJob(const QString& title, uint64_t expectedTotalBytes,
         cancelled->store(true);
     });
 
-    QThread* th = QThread::create([this, job, onDone, cancelled, dlg]() {
+    QThread* th = new usbutils::WorkerThread([this, job, onDone, cancelled, dlg]() {
         const JobOutcome outcome = job(
             [this, dlg](uint64_t done, uint64_t total) {
                 QMetaObject::invokeMethod(this, [dlg, done, total]() {
@@ -928,7 +938,7 @@ void MainWindow::driveReport() {
     dlg->setWindowModality(Qt::WindowModal);
     dlg->show();
 
-    QThread* th = QThread::create([this, dir, cfg, dlg]() {
+    QThread* th = new usbutils::WorkerThread([this, dir, cfg, dlg]() {
         const std::string rep = generateReport(dir.toStdString(), cfg);
         QMetaObject::invokeMethod(this, [this, rep, dlg]() {
             dlg->hide();
@@ -1041,9 +1051,10 @@ void MainWindow::handleUpdateResult(bool manual) {
 
     if (manual) status_->setText(tr("Checking for updates..."));
 
-    QThread* th = QThread::create([this, manual]() {
+    QThread* th = new usbutils::WorkerThread([this, manual]() {
         const ReleaseInfo rel = fetchLatestRelease();
         QMetaObject::invokeMethod(this, [this, rel, manual]() {
+            updateThread_ = nullptr;
             updatePending_ = false;
 
             if (!rel.ok) {
@@ -1076,6 +1087,9 @@ void MainWindow::handleUpdateResult(bool manual) {
         }, Qt::QueuedConnection);
     });
     connect(th, &QThread::finished, th, &QObject::deleteLater);
+    updateThread_ = th;      // cleared in the queued result handler above;
+                             // event order guarantees the result event is
+                             // posted before finished -> deleteLater
     th->start();
 }
 
