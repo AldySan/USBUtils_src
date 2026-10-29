@@ -6,6 +6,9 @@
 #include <algorithm>
 #include <sys/stat.h>
 #include <sys/types.h>
+#if defined(_WIN32)
+#  include <direct.h>         // _mkdir
+#endif
 #include "port.h"
 
 namespace usbutils {

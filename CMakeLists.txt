@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(USBUtils VERSION 0.0.1 LANGUAGES CXX)
+project(USBUtils VERSION 0.0.2 LANGUAGES CXX)
 
 option(USBUTILS_BUILD_GUI "Build the Qt Widgets GUI" ON)
 option(USBUTILS_BUILD_TESTS "Build unit tests" ON)
