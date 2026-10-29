@@ -128,7 +128,6 @@ void FindDialog::search() {
             setEnabled(true);
         }, Qt::QueuedConnection);
     });
-    connect(th, &QThread::finished, th, &QObject::deleteLater);
     th->start();
 }
 
@@ -186,6 +185,5 @@ void FindDialog::extractSelected() {
                     tr("Could not copy the file out of the game."));
         }, Qt::QueuedConnection);
     });
-    connect(th, &QThread::finished, th, &QObject::deleteLater);
     th->start();
 }

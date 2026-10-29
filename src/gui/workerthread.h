@@ -24,12 +24,19 @@ namespace usbutils {
 /// subclass uses none of the std::async machinery and is the classic,
 /// battle-tested Qt worker-thread form.
 ///
-/// Lifetime contract (identical to the QThread::create call sites it
-/// replaces): create with no parent, connect finished -> deleteLater, start.
+/// Lifetime contract: the object deletes ITSELF via the built-in
+/// finished -> deleteLater connection below (the canonical Qt pattern; the
+/// deleteLater event is delivered on the thread that CREATED the object,
+/// after the worker has unwound run()). Call sites must never call
+/// deleteLater() or delete on a WorkerThread themselves, and must never
+/// keep a long-lived owning pointer to it.
 class WorkerThread final : public QThread {
 public:
     explicit WorkerThread(std::function<void()> fn, QObject* parent = nullptr)
-        : QThread(parent), fn_(std::move(fn)) {}
+        : QThread(parent), fn_(std::move(fn))
+    {
+        connect(this, &QThread::finished, this, &QObject::deleteLater);
+    }
 
     void run() override { fn_(); }
 

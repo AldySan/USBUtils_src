@@ -131,7 +131,6 @@ void GameFilesDialog::loadFiles() {
                         .arg(QString::fromStdString(err)));
         }, Qt::QueuedConnection);
     });
-    connect(th, &QThread::finished, th, &QObject::deleteLater);
     th->start();
 }
 
@@ -191,7 +190,6 @@ void GameFilesDialog::extractSelected() {
                     tr("Could not copy the file out of the game."));
         }, Qt::QueuedConnection);
     });
-    connect(th, &QThread::finished, th, &QObject::deleteLater);
     th->start();
 }
 
@@ -271,6 +269,5 @@ void GameFilesDialog::replaceFile() {
                         .arg(QString::fromStdString(r.error)));
         }, Qt::QueuedConnection);
     });
-    connect(th, &QThread::finished, th, &QObject::deleteLater);
     th->start();
 }

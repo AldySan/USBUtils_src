@@ -106,6 +106,11 @@ bool walkIso(const IsoReadFn& read,
             const size_t recOff = off;              // (used by cleanIsoName)
             off += recLen;
 
+            // Sanity: the 33-byte header and the whole identifier must fit
+            // inside the record. Malformed/hostile images otherwise make
+            // cleanIsoName() read past the buffer (garbage or wild names).
+            if (recLen < 34 || size_t(e->nameLen) + 33 > recLen) continue;
+
             const std::string name = cleanIsoName(dir.data(), recOff);
 
             // "." and ".." — identifier byte is 0x00 / 0x01

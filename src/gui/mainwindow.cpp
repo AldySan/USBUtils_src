@@ -449,7 +449,6 @@ void MainWindow::runJob(const QString& title, uint64_t expectedTotalBytes,
             onDone(outcome);
         }, Qt::QueuedConnection);
     });
-    connect(th, &QThread::finished, th, &QObject::deleteLater);
     th->start();
 }
 
@@ -1348,7 +1347,6 @@ void MainWindow::driveReport() {
             box->deleteLater();
         }, Qt::QueuedConnection);
     });
-    connect(th, &QThread::finished, th, &QObject::deleteLater);
     th->start();
 }
 
@@ -1454,7 +1452,6 @@ void MainWindow::handleUpdateResult(bool manual) {
                 QDesktopServices::openUrl(QUrl(QString::fromStdString(rel.url)));
         }, Qt::QueuedConnection);
     });
-    connect(th, &QThread::finished, th, &QObject::deleteLater);
     updateThread_ = th;      // cleared in the queued result handler above;
                              // event order guarantees the result event is
                              // posted before finished -> deleteLater

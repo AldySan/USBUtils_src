@@ -17,6 +17,7 @@
 #include <QThread>
 #include <QCoreApplication>
 #include <QDir>
+#include <QEventLoop>
 
 #include <memory>
 
@@ -47,15 +48,29 @@ QString defaultElfPath() {
 
 /// Run `fn` on a worker thread behind a wait cursor (the operations are
 /// fast — one ELF copy — so a busy dialog is not needed).
+///
+/// Lifetime rules that keep this safe:
+///  - `fn` is COPIED into the worker lambda (never capture the reference
+///    parameter), and the result is written through a heap-allocated
+///    shared slot — no stack references cross the thread boundary.
+///  - We wait inside a real QEventLoop (not a processEvents() spin, which
+///    re-enters arbitrary slots and lets users re-trigger operations
+///    mid-flight), quitting when the thread finishes.
+///  - The WorkerThread object deletes itself via its built-in
+///    finished->deleteLater connection; the DeferredDelete is processed by
+///    the OUTER event loop after this nested loop has unwound, i.e. strictly
+///    after the worker has returned from run() — no use-after-free window.
 template <typename F>
 auto runOnThread(F&& fn) -> decltype(fn()) {
-    decltype(fn()) result;
-    QThread* th = new usbutils::WorkerThread([&result, &fn]() { result = fn(); });
+    using T = decltype(fn());
+    auto result = std::make_shared<T>();          // shared heap slot
+    QThread* th = new usbutils::WorkerThread(
+        [result, fn = std::forward<F>(fn)]() { *result = fn(); });
+    QEventLoop loop;
+    QObject::connect(th, &QThread::finished, &loop, &QEventLoop::quit);
     th->start();
-    while (th->isRunning())     // process events so the dialog stays alive
-        QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
-    th->deleteLater();
-    return result;
+    loop.exec();                                   // paint, stay responsive
+    return std::move(*result);
 }
 
 } // namespace

@@ -159,40 +159,62 @@ WCLI="$REPO/build-win/usbutils.exe"
 [ -f "$WGUI" ] && [ -f "$WCLI" ] || { echo "ERROR: Windows binaries missing (build-win)"; exit 1; }
 cp "$WGUI" "$WCLI" "$WROOT/"
 
-# Copy every DLL imported by our executables (search Qt kit + MinGW runtime).
+# Copy every DLL needed at runtime, discovered by a BFS over the import
+# tables of OUR executables AND of the bundled Qt/MinGW DLLs and plugins.
+# A single-level walk is not enough: Qt6Core.dll itself imports
+# libstdc++-6.dll, libgcc_s_seh-1.dll and libwinpthread-1.dll from the
+# MinGW runtime the kit was built with. Without them, Windows loads
+# whatever libstdc++-6.dll it finds on the machine (e.g. an MSYS2 one with
+# a different GCC) — or the app fails to start at all on clean machines.
 declare -A dllsrc=()
 for d in "$QT_WIN/bin" "$MINGW/lib"; do
     while IFS= read -r f; do
-        dllsrc["$(basename "$f")"]="$(readlink -f "$f")"
+        dllsrc["$(basename "$f" | tr 'A-Z' 'a-z')"]="$(readlink -f "$f")"
     done < <(find "$d" -maxdepth 1 -name '*.dll' 2>/dev/null)
 done
-copied=0
-for exe in "$WGUI" "$WCLI"; do
-    while IFS= read -r dll; do
-        [ -n "$dll" ] || continue
-        case "$dll" in
-            KERNEL32.dll|USER32.dll|GDI32.dll|SHELL32.dll|ADVAPI32.dll|WS2_32.dll|\
-            WINHTTP.dll|ole32.dll|OLEAUT32.dll|COMCTL32.dll|UXTHEME.dll|CRYPT32.dll|\
-            Secur32.dll|bcrypt.dll|ntdll.dll|msvcrt.dll|SHLWAPI.dll|IMM32.dll|\
-            WINMM.dll|dwmapi.dll|dbghelp.dll|USERENV.dll|NETAPI32.dll|d3d11.dll|\
-            dxgi.dll|glu32.dll|OPENGL32.dll|api-ms-*|ext-ms-*) continue ;;
-        esac
-        src="${dllsrc[${dll,,}]:-}"
-        if [ -z "$src" ]; then src="${dllsrc[$dll]:-}"; fi
-        if [ -n "$src" ] && [ ! -f "$WROOT/$dll" ]; then
-            cp "$src" "$WROOT/" && copied=$((copied+1))
-        elif [ -z "$src" ]; then
-            echo "  (system DLL, not bundled: $dll)"
-        fi
-    done < <("$OBJDUMP" -p "$exe" 2>/dev/null | awk '/DLL Name/{print $3}')
-done
-echo "Windows: bundled $copied DLLs"
 
+imports_of() {  # imports_of <pe-file> — list imported DLL names
+    "$OBJDUMP" -p "$1" 2>/dev/null | awk '/DLL Name/{print $3}'
+}
+
+# copy the plugins FIRST so their imports join the walk
 cp -L "$QT_WIN/plugins/platforms/qwindows.dll"      "$WROOT/platforms/"
 cp -L "$QT_WIN/plugins/styles/qmodernwindowsstyle.dll" "$WROOT/styles/" 2>/dev/null || true
 for q in qgif qico qjpeg; do
     cp -L "$QT_WIN/plugins/imageformats/$q.dll" "$WROOT/imageformats/" 2>/dev/null || true
 done
+
+copied=0
+declare -A queued=()
+queue=("$WGUI" "$WCLI" "$WROOT/platforms/qwindows.dll")
+[ -f "$WROOT/styles/qmodernwindowsstyle.dll" ] && queue+=("$WROOT/styles/qmodernwindowsstyle.dll")
+while [ ${#queue[@]} -gt 0 ]; do
+    next=()
+    for bin in "${queue[@]}"; do
+        while IFS= read -r dll; do
+            [ -n "$dll" ] || continue
+            case "$dll" in
+                KERNEL32.dll|USER32.dll|GDI32.dll|SHELL32.dll|ADVAPI32.dll|WS2_32.dll|\
+                WINHTTP.dll|ole32.dll|OLEAUT32.dll|COMCTL32.dll|UXTHEME.dll|CRYPT32.dll|\
+                Secur32.dll|bcrypt.dll|ntdll.dll|msvcrt.dll|SHLWAPI.dll|IMM32.dll|\
+                WINMM.dll|dwmapi.dll|dbghelp.dll|USERENV.dll|NETAPI32.dll|d3d11.dll|\
+                dxgi.dll|glu32.dll|OPENGL32.dll|api-ms-*|ext-ms-*) continue ;;
+            esac
+            key="${dll,,}"
+            [ -n "${queued[$key]:-}" ] && continue
+            queued[$key]=1
+            src="${dllsrc[$key]:-}"
+            if [ -n "$src" ]; then
+                cp -L "$src" "$WROOT/" && copied=$((copied+1))
+                next+=("$src")
+            else
+                echo "  (system DLL, not bundled: $dll)"
+            fi
+        done < <(imports_of "$bin")
+    done
+    queue=("${next[@]}")
+done
+echo "Windows: bundled $copied DLLs (incl. MinGW runtime)"
 cp "$REPO/data/PS2LOAD.ELF" "$REPO/data/usbutil.dna" "$REPO/data/usbutil.dni" \
    "$REPO/data/usbutil.ljs" "$REPO/data/usbutil.aso" "$REPO/data/usbutil.rcn" "$WROOT/data/"
 mkdir -p "$WROOT/data/SCEE_DD"
@@ -244,4 +266,7 @@ echo "== sanity =="
 [ "$(unzip -l "$OUT/usbutils-$VERSION-windows-x86_64.zip" | grep -c 'usbutil.rcn')" -ge 1 ] || { echo "FAIL: no usbutil.rcn in windows zip"; exit 1; }
 [ "$(unzip -l "$OUT/usbutils-$VERSION-windows-x86_64.zip" | grep -c 'IOPRP202.IMG')" -ge 1 ] || { echo "FAIL: no IOPRP images in windows zip"; exit 1; }
 [ "$(unzip -l "$OUT/usbutils-$VERSION-windows-x86_64.zip" | grep -c 'Qt6Core.dll')" -ge 1 ] || { echo "FAIL: no Qt6Core.dll in windows zip"; exit 1; }
+[ "$(unzip -l "$OUT/usbutils-$VERSION-windows-x86_64.zip" | grep -c 'libstdc++-6.dll')" -ge 1 ] || { echo "FAIL: no libstdc++-6.dll in windows zip"; exit 1; }
+[ "$(unzip -l "$OUT/usbutils-$VERSION-windows-x86_64.zip" | grep -c 'libgcc_s_seh-1.dll')" -ge 1 ] || { echo "FAIL: no libgcc_s_seh-1.dll in windows zip"; exit 1; }
+[ "$(unzip -l "$OUT/usbutils-$VERSION-windows-x86_64.zip" | grep -c 'libwinpthread-1.dll')" -ge 1 ] || { echo "FAIL: no libwinpthread-1.dll in windows zip"; exit 1; }
 echo "ALL PACKAGE CHECKS PASSED"

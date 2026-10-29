@@ -213,7 +213,6 @@ void VideoRipDialog::runJob(const QString& runningText,
             rescan();
         }, Qt::QueuedConnection);
     });
-    connect(th, &QThread::finished, th, &QObject::deleteLater);
     th->start();
 }
 
