@@ -368,13 +368,16 @@ static int cmdRecover(const Args& a) {
 }
 
 static int cmdDrives() {
-    for (const UsbDrive& d : listDrives()) {
+    const std::vector<UsbDrive> drives = listDrives();
+    for (const UsbDrive& d : drives) {
         std::printf("%-24s %-16s %10s free  %s%s\n", d.root.c_str(),
                     d.label.substr(0, 16).c_str(),
                     humanSize(d.freeBytes).c_str(),
                     d.fat32 ? "FAT32 " : "",
                     d.hasUlCfg ? "[ul.cfg]" : "");
     }
+    if (drives.empty())
+        std::puts("No removable drives found. Plug in a USB drive and try again.");
     return 0;
 }
 
