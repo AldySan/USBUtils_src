@@ -30,6 +30,8 @@ binary** and is maintained as a modern, documented, testable codebase.
 | **Copy / move games to another drive** (chunk stream + record, sidecar carried) | ✅ |
 | **General report** (drive, games, structure evaluation, broken codes) | ✅ |
 | **Correct code 666.66** (fix broken serials, re-derived from SYSTEM.CNF) | ✅ |
+| **Sort games A–Z** (original "Sorting" — reorders ul.cfg on disk) | ✅ |
+| **Restore space** (original "Rest. Spc." — find & delete left-over `ul.*` files) | ✅ |
 | **Per-game file explore / extract / inject** (same-size in-place replace) | ✅ |
 | USB drive discovery (Windows / Linux / macOS) | ✅ |
 | CLI (`usbutils`) and Qt Widgets GUI (`usbutils-gui`) | ✅ |
@@ -86,6 +88,9 @@ usbutils inject 0 --path SYSTEM.CNF --file new.cnf -d /media/usb0
 usbutils copy 0 --to /media/usb1 -d /media/usb0   # copy game to 2nd drive
 usbutils move all --to /media/usb1 -d /media/usb0 # move every game over
 usbutils report          -d /media/usb0 -o report.txt
+usbutils sort            -d /media/usb0      # sort the game list A-Z
+usbutils clean           -d /media/usb0      # find left-over files (dry run)
+usbutils clean           -d /media/usb0 --apply  # ...and delete them
 usbutils fix             -d /media/usb0 --apply  # correct code 666.66
 usbutils check-update                               # look for a newer release
 usbutils --version

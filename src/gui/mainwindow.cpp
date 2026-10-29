@@ -282,6 +282,11 @@ void MainWindow::buildMenus() {
     QAction* aRecover = mTools->addAction(tr("&Recover games..."));
     connect(aRecover, &QAction::triggered, this, &MainWindow::recoverGames);
     mTools->addSeparator();
+    QAction* aClean = mTools->addAction(tr("&Clean up drive space..."));
+    connect(aClean, &QAction::triggered, this, &MainWindow::cleanDriveSpace);
+    QAction* aSort = mTools->addAction(tr("&Sort the games list (A to Z)"));
+    connect(aSort, &QAction::triggered, this, &MainWindow::sortGamesList);
+    mTools->addSeparator();
     QAction* aReport = mTools->addAction(tr("Drive &report..."));
     connect(aReport, &QAction::triggered, this, &MainWindow::driveReport);
 
@@ -792,6 +797,98 @@ void MainWindow::recoverGames() {
     QApplication::restoreOverrideCursor();
     if (!saved)
         QMessageBox::warning(this, tr("USBUtils"), tr("Could not write ul.cfg."));
+    refreshGames();
+}
+
+// ---------------------------------------------------------------------------
+// sort / clean (original "Sorting" + "Restore space")
+// ---------------------------------------------------------------------------
+
+void MainWindow::sortGamesList() {
+    if (!cfg_) {
+        QMessageBox::information(this, tr("Sort games"),
+            tr("Open a games list first."));
+        return;
+    }
+    if (cfg_->records.size() < 2) {
+        QMessageBox::information(this, tr("Sort games"),
+            tr("Nothing to sort — fewer than two games on the list."));
+        return;
+    }
+    size_t moved = 0;
+    const bool ok = usbutils::sortGames(currentDir().toStdString(), &moved);
+    if (!ok) {
+        QMessageBox::warning(this, tr("Sort games"),
+            tr("Could not write ul.cfg — the list was not changed."));
+        return;
+    }
+    refreshGames();
+    QMessageBox::information(this, tr("Sort games"),
+        moved ? tr("Done — the list is now sorted from A to Z (%1 game(s) "
+                   "changed place).").arg(quint64(moved))
+              : tr("The list is already sorted from A to Z."));
+}
+
+void MainWindow::cleanDriveSpace() {
+    const QString dir = currentDir();
+    if (dir.isEmpty()) {
+        QMessageBox::information(this, tr("Clean up drive space"),
+            tr("Open a games list first."));
+        return;
+    }
+    const DriveSpaceReport rep =
+        usbutils::scanDriveSpace(dir.toStdString());
+
+    QString msg = tr(
+        "Drive check:\n\n"
+        "Games on the drive: %1\n"
+        "Files the games use: %2 (%3)\n"
+        "Left-over files no game uses: %4 (%5)\n"
+        "Files with size zero: %6\n"
+        "Free space right now: %7")
+        .arg(quint64(rep.games))
+        .arg(quint64(rep.gameFiles)).arg(humanSize(rep.gameBytes))
+        .arg(quint64(rep.obsoleteFiles)).arg(humanSize(rep.obsoleteBytes))
+        .arg(quint64(rep.zeroSizeFiles))
+        .arg(humanSize(rep.freeBytes));
+
+    if (rep.obsolete.empty()) {
+        QMessageBox::information(this, tr("Clean up drive space"),
+            msg + tr("\n\nNothing to clean — no left-over files."));
+        return;
+    }
+
+    QString list;
+    for (const std::string& n : rep.obsolete)
+        list += QString::fromStdString(n) + '\n';
+    msg += tr("\n\nLeft-over files:\n%1").arg(list);
+    msg += tr("Deleting them frees up %1.")
+               .arg(humanSize(rep.obsoleteBytes));
+
+    // Same safety net as Recover: suggest recovering real games first.
+    const auto orphans = findOrphans(dir.toStdString());
+    if (!orphans.empty())
+        msg += tr("\n\nNote: %1 game(s) look recoverable (they are not on "
+                  "the list yet). Use \"Recover games...\" first if you "
+                  "want to keep them — cleaning now deletes their "
+                  "files.").arg(quint64(orphans.size()));
+
+    if (QMessageBox::question(this, tr("Clean up drive space"), msg +
+            tr("\n\nDelete these left-over files?")) != QMessageBox::Yes)
+        return;
+
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    const int removed = usbutils::restoreSpace(dir.toStdString(), rep);
+    QApplication::restoreOverrideCursor();
+    if (removed == static_cast<int>(rep.obsoleteFiles))
+        QMessageBox::information(this, tr("Clean up drive space"),
+            tr("Done — deleted %1 file(s) and freed up %2.")
+                .arg(removed).arg(humanSize(rep.obsoleteBytes)));
+    else
+        QMessageBox::warning(this, tr("Clean up drive space"),
+            tr("Deleted %1 of %2 file(s) — the rest could not be removed "
+               "(check that the drive is not write-protected).")
+                .arg(removed).arg(quint64(rep.obsoleteFiles)));
     refreshGames();
 }
 

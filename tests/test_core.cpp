@@ -835,6 +835,81 @@ static void testGameOps() {
 // 12. update: version comparison
 // ---------------------------------------------------------------------------
 
+static void testSortAndClean() {
+    const fs::path base = fs::temp_directory_path() / "usbutils_sortclean";
+    fs::remove_all(base);
+    fs::create_directories(base);
+
+    // three tiny games, installed out of alphabetical order
+    const char* names[3] = {"Charlie Game", "alpha game", "Bravo Game"};
+    std::string ids[3];
+    for (int i = 0; i < 3; ++i) {
+        const fs::path iso = base / (std::string("g") + std::to_string(i) + ".iso");
+        writeTestIso(iso, "SLUS_200.0" + std::string(1, char('1' + i)), 2048 * 2);
+        InstallOptions opt;
+        opt.gameName = names[i];
+        const InstallResult r = installIso(iso.string(), base.string(), opt);
+        CHECK(r.ok);
+        ids[i] = r.idHex;
+        fs::remove(iso);
+    }
+    UlCfg cfg;
+    CHECK(cfg.load(base.string()));
+    CHECK(cfg.records.size() == 3);
+    if (cfg.records.size() != 3) { fs::remove_all(base); return; }
+    CHECK(cfg.records[0].nameStr() == "Charlie Game");   // install order
+
+    // ---- sort --------------------------------------------------------------
+    size_t moved = 0;
+    CHECK(sortGames(base.string(), &moved));
+    CHECK(moved == 3);                                   // all changed place
+    CHECK(cfg.load(base.string()));
+    CHECK(cfg.records[0].nameStr() == "alpha game");     // case-insensitive
+    CHECK(cfg.records[1].nameStr() == "Bravo Game");
+    CHECK(cfg.records[2].nameStr() == "Charlie Game");
+    // idempotent: second run reports nothing to move
+    CHECK(sortGames(base.string(), &moved));
+    CHECK(moved == 0);
+
+    // ---- clean: nothing obsolete yet ---------------------------------------
+    DriveSpaceReport rep = scanDriveSpace(base.string());
+    CHECK(rep.games == 3);
+    CHECK(rep.obsoleteFiles == 0);
+    CHECK(rep.gameFiles == 3);                           // one chunk each
+
+    // ---- clean: stray chunk + rip sidecar protection ------------------------
+    // a video-rip sidecar of game[0] must count as a game file...
+    const std::string rip = "ul." + ids[0] + ".SLUS_200.01.00.rip";
+    { FILE* f = std::fopen((base / rip).c_str(), "wb"); std::fputc(1, f); std::fclose(f); }
+    // ...while an unreferenced chunk from a deleted game is obsolete
+    const std::string stray = "ul.DEADBEEF.SLUS_999.99.00";
+    { FILE* f = std::fopen((base / stray).c_str(), "wb");
+      std::fwrite("junk", 1, 4, f); std::fclose(f); }
+
+    rep = scanDriveSpace(base.string());
+    CHECK(rep.obsoleteFiles == 1);
+    CHECK(rep.obsoleteBytes == 4);
+    CHECK(rep.gameFiles == 4);                           // 3 chunks + sidecar
+    CHECK(rep.obsolete.size() == 1 && rep.obsolete[0] == stray);
+
+    // restore space deletes the stray file only
+    CHECK(restoreSpace(base.string(), rep) == 1);
+    CHECK(!fs::exists(base / stray));
+    CHECK(fs::exists(base / rip));                       // sidecar survived
+    rep = scanDriveSpace(base.string());
+    CHECK(rep.obsoleteFiles == 0);
+
+    // ---- clean: zero-size detection -----------------------------------------
+    { FILE* f = std::fopen((base / "ul.CAFE0000.SLUS_000.00.01").c_str(), "wb");
+      std::fclose(f); }                                   // empty file
+    rep = scanDriveSpace(base.string());
+    CHECK(rep.zeroSizeFiles == 1);
+    CHECK(rep.obsoleteFiles == 1);
+    CHECK(restoreSpace(base.string(), rep) == 1);
+
+    fs::remove_all(base);
+}
+
 static void testVersionCompare() {
     CHECK(isVersionNewer("0.0.2", "v0.0.3"));
     CHECK(isVersionNewer("0.0.2", "0.0.3"));
@@ -863,6 +938,7 @@ int main() {
     testIoprpLocate();
     testPs2Load();
     testGameOps();
+    testSortAndClean();
     testVersionCompare();
     std::printf(g_failed ? "\n%d FAILURE(S)\n" : "\nALL TESTS PASSED\n", g_failed);
     return g_failed ? 1 : 0;
