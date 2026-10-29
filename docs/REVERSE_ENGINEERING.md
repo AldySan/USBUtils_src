@@ -45,7 +45,9 @@ notification, and the USB HDD game management core (`USBHDH*`).
 * View/Edit `ul.cfg`
 * Find file in games
 * **Patch DNAS/IOPR/IRX** (replace IOPRP images inside installed games)
-* **PS2Load options** (inject `PS2LOAD.ELF` + build bootable image)
+* **PS2Load options** (swap the game's boot program for PS2LOAD.ELF —
+  marker record + MSYSTEM.CNF backup + in-place SYSTEM.CNF rewrite;
+  see `formats/ps2load.md`)
 * Correct code 666.66 (fix corrupted size entries)
 * Structure check (verify all chunk files exist)
 * Rip GAME (video removal: activate/deactivate/coincide)

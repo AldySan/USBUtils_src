@@ -21,6 +21,7 @@
 #include "gamedb.h"
 #include "dnas.h"
 #include "videorip.h"
+#include "ps2load.h"
 #include "port.h"
 
 #include <cstdio>
@@ -42,7 +43,7 @@ static int g_failed = 0;
 
 // --- test helpers ----------------------------------------------------------
 
-/// Append one ISO9660 directory record; returns its length.
+/// Append one ISO9660 directory record (ECMA-119 layout); returns its length.
 static size_t putDirRecord(std::vector<uint8_t>& dir, size_t off,
                            uint32_t lba, uint32_t size, uint8_t flags,
                            const std::string& name) {
@@ -52,8 +53,11 @@ static size_t putDirRecord(std::vector<uint8_t>& dir, size_t off,
     rec[0] = static_cast<uint8_t>(recLen);
     std::memcpy(rec + 2,  &lba, 4);
     std::memcpy(rec + 10, &size, 4);
-    rec[18] = flags;
-    rec[25] = static_cast<uint8_t>(name.size());
+    rec[18] = 120;                               // date: 2000-00-00 …
+    rec[25] = flags;
+    rec[28] = 1; rec[29] = 0;                    // volume seq LE
+    rec[30] = 0; rec[31] = 1;                    // volume seq BE
+    rec[32] = static_cast<uint8_t>(name.size());
     if (!name.empty()) std::memcpy(rec + 33, name.data(), name.size());
     std::memcpy(dir.data() + off, rec, recLen);
     return recLen;
@@ -90,8 +94,10 @@ static void writeTestIso(const fs::path& p, const std::string& serial,
     const uint32_t rootLba = 18, rootSize = sector;
     std::memcpy(root + 2, &rootLba, 4);
     std::memcpy(root + 10, &rootSize, 4);
-    root[18] = 2;                              // directory flag
-    root[25] = 1;                              // identifier "\0"
+    root[18] = 120;                            // date byte (ECMA-119 @18)
+    root[25] = 2;                              // directory flag (@25)
+    root[28] = 1; root[30] = 1;                // volume sequence numbers
+    root[32] = 1;                              // identifier "\0" length
     img.insert(img.end(), pvd, pvd + sector);
 
     // sector 17: volume descriptor terminator (left zero — parser skips)
@@ -141,9 +147,11 @@ static void writeTestIso(const fs::path& p, const std::string& serial,
         img.resize(ioprpLba * sector, 0);      // keep layout offsets stable
     }
 
-    // trailing generic payload
+    // trailing generic payload (padded to a full sector like real ISOs,
+    // so the image ends on a sector boundary — required by PS2Load)
     const uint64_t payload = payloadBytes ? payloadBytes : 1;
     img.resize(img.size() + payload, 0xAB);
+    img.resize((img.size() + sector - 1) / sector * sector, 0);
 
     FILE* f = std::fopen(p.string().c_str(), "wb");
     std::fwrite(img.data(), 1, img.size(), f);
@@ -490,6 +498,127 @@ static void testIoprpLocate() {
     fs::remove_all(base);
 }
 
+static void testPs2Load() {
+    const fs::path base = fs::temp_directory_path() / "usbutils_ps2l";
+    fs::remove_all(base);
+    fs::create_directories(base);
+    const fs::path iso = base / "game.iso";
+    writeTestIso(iso, "SLUS_202.65", 2048);
+
+    InstallOptions opt;
+    opt.gameName = "Ps2l Game";
+    const InstallResult ir = installIso(iso.string(), base.string(), opt);
+    CHECK(ir.ok);
+    if (!ir.ok) { fs::remove_all(base); return; }
+
+    // a stand-in loader ELF (the real one is 218 KiB in data/)
+    const fs::path loader = base / "PS2LOAD.ELF";
+    std::vector<uint8_t> elf(4096);
+    std::memcpy(elf.data(), "\x7f" "ELF", 4);
+    for (size_t i = 4; i < elf.size(); ++i)
+        elf[i] = static_cast<uint8_t>(i & 0xFF);
+    {
+        FILE* f = std::fopen(loader.string().c_str(), "wb");
+        std::fwrite(elf.data(), 1, elf.size(), f);
+        std::fclose(f);
+    }
+    const uint64_t chunkBefore = fs::file_size(
+        base / ("ul." + ir.idHex + ".SLUS_202.65.00"));
+
+    // ---- status before ---------------------------------------------------
+    Ps2LoadInfo info = queryPs2Load(base.string(), ir.idHex, "SLUS_202.65", 1);
+    CHECK(info.state == Ps2LoadState::NotInjected);
+    CHECK(info.bootElf == "SLUS_202.65");
+    CHECK(info.ps2lName == "PS2L_202.65.65");   // drop 5, re-add ext
+
+    // ---- inject ----------------------------------------------------------
+    const Ps2LoadResult res = injectPs2Load(base.string(), ir.idHex,
+                                            "SLUS_202.65", 1,
+                                            loader.string());
+    CHECK(res.ok);
+    if (!res.ok) { fs::remove_all(base); return; }
+    CHECK(res.ps2lName == "PS2L_202.65.65");
+    CHECK(res.appendedBytes == 2048 + elf.size());  // padded CNF + ELF
+
+    // double inject must be refused (message @0x3BB370)
+    const Ps2LoadResult again = injectPs2Load(base.string(), ir.idHex,
+                                              "SLUS_202.65", 1,
+                                              loader.string());
+    CHECK(!again.ok);
+
+    // ---- verify through the ISO walker -----------------------------------
+    GameStream gs;
+    CHECK(gs.open(base.string(), ir.idHex, "SLUS_202.65", 1));
+    std::map<std::string, IsoEntry> found;
+    walkIso([&](uint64_t off, void* dst, size_t n) {
+        return gs.read(off, dst, n) == n;
+    }, [&](const IsoEntry& e) {
+        found[e.name] = e;
+        return true;
+    });
+    CHECK(found.count("SCEE_DD") == 1);
+    CHECK(found.count("MSYSTEM.CNF") == 1);
+    CHECK(found.count("PS2L_202.65.65") == 1);
+    if (found.count("SCEE_DD")) {
+        CHECK(found["SCEE_DD"].isDir);
+        CHECK(found["SCEE_DD"].lba < info.rootDirLba);   // tool marker
+        CHECK(found["SCEE_DD"].size == 0x158);
+    }
+    if (found.count("MSYSTEM.CNF"))
+        CHECK(found["MSYSTEM.CNF"].size == 2048);       // sector snapshot
+    if (found.count("PS2L_202.65.65")) {
+        const IsoEntry& e = found["PS2L_202.65.65"];
+        CHECK(e.size == elf.size());
+        std::vector<uint8_t> got(elf.size());
+        CHECK(gs.read(e.lba * 2048ull, got.data(), got.size()) == got.size());
+        CHECK(std::memcmp(got.data(), elf.data(), elf.size()) == 0);
+    }
+
+    // SYSTEM.CNF now boots the injected record name
+    {
+        char cnf[97] = {};
+        gs.read(20ull * 2048, cnf, 96);
+        CHECK(std::strstr(cnf, "PS2L_202.65.65") != nullptr);
+        CHECK(std::strstr(cnf, "cdrom0:\\SLUS_202.65") == nullptr);
+    }
+    // the backup keeps the original boot line
+    if (found.count("MSYSTEM.CNF")) {
+        char backup[97] = {};
+        gs.read(found["MSYSTEM.CNF"].lba * 2048ull, backup, 96);
+        CHECK(std::strstr(backup, "cdrom0:\\SLUS_202.65;1") != nullptr);
+    }
+
+    // ---- status after ----------------------------------------------------
+    info = queryPs2Load(base.string(), ir.idHex, "SLUS_202.65", 1);
+    CHECK(info.state == Ps2LoadState::InjectedByTool);
+    CHECK(info.ps2lName == "PS2L_202.65.65");
+
+    // ---- remove ----------------------------------------------------------
+    const Ps2LoadResult rr = removePs2Load(base.string(), ir.idHex,
+                                           "SLUS_202.65", 1);
+    CHECK(rr.ok);
+    info = queryPs2Load(base.string(), ir.idHex, "SLUS_202.65", 1);
+    CHECK(info.state == Ps2LoadState::NotInjected);
+
+    {
+        char cnf[97] = {};
+        gs.read(20ull * 2048, cnf, 96);
+        CHECK(std::strstr(cnf, "cdrom0:\\SLUS_202.65;1") != nullptr);
+    }
+    // the chunk file is trimmed back to its pre-inject size
+    CHECK(fs::file_size(base / ("ul." + ir.idHex + ".SLUS_202.65.00"))
+          == chunkBefore);
+
+    // export round trip is bit-exact again
+    UlCfg cfg;
+    CHECK(cfg.load(base.string()));
+    CHECK(exportIso(base.string(), cfg.records[0],
+                    (base / "back.iso").string()));
+    CHECK(filesEqual(iso, base / "back.iso"));
+
+    fs::remove_all(base);
+}
+
 int main() {
     std::printf("== USBUtils core tests ==\n");
     testCrcId();
@@ -503,6 +632,7 @@ int main() {
     testInstallExport();
     testVideoRip();
     testIoprpLocate();
+    testPs2Load();
     std::printf(g_failed ? "\n%d FAILURE(S)\n" : "\nALL TESTS PASSED\n", g_failed);
     return g_failed ? 1 : 0;
 }

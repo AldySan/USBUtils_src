@@ -13,17 +13,18 @@ namespace {
 constexpr uint32_t kSectorSize = 2048;
 
 #pragma pack(push, 1)
-struct IsoDirEntry {           // ISO9660 directory record (standard layout)
-    uint8_t  len;              // 0
-    uint8_t  extLen;           // 1
-    uint32_t lbaLE, lbaBE;     // 2, 6
-    uint32_t sizeLE, sizeBE;   // 10, 14   (32-bit!)
-    uint8_t  flags;            // 18
-    uint8_t  unitSize;         // 19
-    uint8_t  gapSize;          // 20
-    uint16_t volSeqLE, volSeqBE; // 21, 23
-    uint8_t  nameLen;          // 25
-    // 26..32: datetime (7 bytes); 33..: file identifier
+struct IsoDirEntry {           // ISO9660 directory record — ECMA-119
+    uint8_t  len;              // 0      record length
+    uint8_t  extLen;           // 1      extended attribute length
+    uint32_t lbaLE, lbaBE;     // 2, 6   extent location
+    uint32_t sizeLE, sizeBE;   // 10, 14 data length (32-bit!)
+    uint8_t  date[7];          // 18..24 recording date/time
+    uint8_t  flags;            // 25     file flags
+    uint8_t  unitSize;         // 26     file unit size
+    uint8_t  gapSize;          // 27     interleave gap size
+    uint16_t volSeqLE, volSeqBE; // 28, 30 volume sequence number
+    uint8_t  nameLen;          // 32     file identifier length
+    // 33..: file identifier
 };
 #pragma pack(pop)
 

@@ -7,6 +7,10 @@
 #include <cstring>
 #include <algorithm>
 
+#if defined(__unix__) || defined(__APPLE__)
+#  include <unistd.h>        // ::truncate
+#endif
+
 namespace usbutils {
 
 namespace {
@@ -104,6 +108,57 @@ bool GameStream::write(uint64_t offset, const void* src, size_t n) {
         if (!ok) return false;
         put += want;
     }
+    return true;
+}
+
+uint64_t GameStream::append(const void* src, size_t n, uint64_t limit) {
+    if (n == 0) return total_;
+    if (parts_ == 0) return ~0ull;
+
+    // Refuse to grow past the last chunk's 1 GiB addressing window.
+    if (limit && total_ + n > limit) return ~0ull;
+
+    // The append always lands in (and grows) the LAST chunk file.
+    const uint32_t   last   = parts_ - 1;
+    const std::string path  = chunkPath_(last);
+    const uint64_t   inChunk = total_ - starts_[last];
+
+    FILE* f = std::fopen(path.c_str(), "r+b");
+    if (!f) f = std::fopen(path.c_str(), "wb");   // chunk exists per ul.cfg
+    if (!f) return ~0ull;
+    const bool ok = usbutils::seek64(f, static_cast<int64_t>(inChunk))
+                 && std::fwrite(src, 1, n, f) == n;
+    std::fclose(f);
+    if (!ok) return ~0ull;
+
+    const uint64_t at = total_;
+    total_ += n;
+    return at;
+}
+
+bool GameStream::truncate(uint64_t newSize) {
+    if (parts_ == 0 || newSize > total_) return false;
+    if (newSize == total_) return true;
+
+    const uint32_t last = parts_ - 1;
+    if (newSize <= starts_[last])
+        return false;                    // would span a chunk boundary
+
+    const std::string path = chunkPath_(last);
+    const uint64_t   want  = newSize - starts_[last];
+
+    FILE* f = std::fopen(path.c_str(), "r+b");
+    if (!f) return false;
+    bool ok = usbutils::seek64(f, static_cast<int64_t>(want));
+#if defined(_MSC_VER)
+    ok = ok && _chsize_s(_fileno(f), static_cast<long>(want)) == 0;
+#else
+    // Portable POSIX path; a plain ftruncate via fileno.
+    ok = ok && ::truncate(path.c_str(), static_cast<off_t>(want)) == 0;
+#endif
+    std::fclose(f);
+    if (!ok) return false;
+    total_ = newSize;
     return true;
 }
 
