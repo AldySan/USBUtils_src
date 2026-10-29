@@ -28,6 +28,7 @@ add_library(usbutils_core STATIC
     src/core/usbdevice.cpp
     src/core/videorip.cpp
     src/core/ps2load.cpp
+    src/core/gameops.cpp
 )
 target_include_directories(usbutils_core PUBLIC src/core)
 target_compile_definitions(usbutils_core PUBLIC

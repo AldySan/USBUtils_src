@@ -19,6 +19,14 @@
  *   usbutils dnas patch <index>         -d <dir> -p <pkg.dni> --dna <pkg.dna> -v <ver>
  *   usbutils drives
  *   usbutils id -n "Name"               (show computed game id)
+ *   usbutils find <pattern>             -d <dir> [--size N]
+ *   usbutils files <index>              -d <dir>
+ *   usbutils extract <index> --path <p> -d <dir> [-o <outdir|file>]
+ *   usbutils inject <index> --path <p>  -d <dir> --file <replacement>
+ *   usbutils copy <index|all> --to <d>  -d <dir>
+ *   usbutils move <index|all> --to <d>  -d <dir>
+ *   usbutils report                     -d <dir> [-o <file>]
+ *   usbutils fix                        -d <dir> [--apply]
  */
 #include "../core/ulcfg.h"
 #include "../core/installer.h"
@@ -29,6 +37,7 @@
 #include "../core/dnas.h"
 #include "../core/videorip.h"
 #include "../core/ps2load.h"
+#include "../core/gameops.h"
 #include "../core/gamedb.h"
 #include "../core/usbdevice.h"
 
@@ -67,7 +76,19 @@ static void usage() {
         "  usbutils drives\n"
         "  usbutils dnas list            -p <usbutil.dni>\n"
         "  usbutils dnas patch <index>   -d <dir> -p <usbutil.dni> --dna <usbutil.dna> -v <ver>\n"
-        "  usbutils --version\n", USBUTILS_VERSION);
+        "  usbutils find <pattern>       -d <dir> [--size N]   (wildcards * ?; searches\n"
+        "                                                     every game's file list)\n"
+        "  usbutils files <index>        -d <dir>              (list in-game files)\n"
+        "  usbutils extract <index> --path <p> [-o out] -d <dir>  (pull one file out)\n"
+        "  usbutils inject <index> --path <p> --file <f> -d <dir>  (same-size replace)\n"
+        "  usbutils copy <index|all> --to <dir> -d <dir>  (copy games to another drive)\n"
+        "  usbutils move <index|all> --to <dir> -d <dir>  (move games to another drive)\n"
+        "  usbutils report               -d <dir> [-o <file>] (drive report)\n"
+        "  usbutils fix                  -d <dir> [--apply]   (correct code 666.66)\n"
+        "  usbutils --version\n"
+        "\n"
+        "install also accepts a device path (e.g. /dev/sr0 on Linux) to\n"
+        "create a game straight from a PS2 disc.\n", USBUTILS_VERSION);
 }
 
 static std::string humanSize(uint64_t b) {
@@ -90,6 +111,8 @@ static ProgressFn makeProgress() {
 
 struct Args {
     std::string cmd, sub, dir, iso, name, out, dni, dna, ver, only, elf;
+    std::string pattern, dest, path, file;
+    uint64_t    sizeFilter = 0;
     int index = -1;
     bool all = false, apply = false, noBackup = false;
 };
@@ -111,6 +134,10 @@ static Args parse(int argc, char** argv) {
         else if (s == "-v") a.ver = next();
         else if (s == "--only") a.only = next();
         else if (s == "--elf") a.elf = next();
+        else if (s == "--to") a.dest = next();
+        else if (s == "--path") a.path = next();
+        else if (s == "--file") a.file = next();
+        else if (s == "--size") a.sizeFilter = std::strtoull(next().c_str(), nullptr, 10);
         else if (a.cmd == "ps2load" && a.sub.empty()
                  && (s == "inject" || s == "remove" || s == "status"))
             a.sub = s;
@@ -121,6 +148,7 @@ static Args parse(int argc, char** argv) {
         else if (std::isdigit(static_cast<unsigned char>(s[0])) && s.find_first_not_of("0123456789") == std::string::npos)
             a.index = std::atoi(s.c_str());
         else if (a.iso.empty() && a.cmd == "install") a.iso = s;
+        else if (a.pattern.empty() && a.cmd == "find") a.pattern = s;
     }
     return a;
 }
@@ -505,6 +533,206 @@ static int cmdPs2Load(const Args& a) {
     return 0;
 }
 
+// ---------------------------------------------------------------------------
+// gameops commands: find / files / extract / inject / copy / move / report / fix
+// ---------------------------------------------------------------------------
+
+static int cmdFind(const Args& a) {
+    if (a.dir.empty()) { usage(); return 2; }
+    UlCfg cfg;
+    if (!cfg.load(a.dir)) { std::printf("ERROR: no ul.cfg in %s\n", a.dir.c_str()); return 1; }
+
+    const auto hits = findFileInGames(a.dir, cfg, a.pattern, a.sizeFilter);
+    if (hits.empty()) {
+        std::printf("no matching files in %zu game(s)\n", cfg.records.size());
+        return 0;
+    }
+    std::printf("%-32s %-40s %12s\n", "GAME", "FILE", "SIZE");
+    for (const FileHit& h : hits)
+        std::printf("%-32s %-40s %12s\n",
+                    h.gameName.substr(0, 32).c_str(),
+                    h.entry.path.substr(0, 40).c_str(),
+                    humanSize(h.entry.size).c_str());
+    std::printf("%zu file(s)\n", hits.size());
+    return 0;
+}
+
+static int cmdFiles(const Args& a) {
+    UlCfg cfg;
+    size_t index = 0;
+    std::string id;
+    if (!resolveGame(a, cfg, index, id)) return 2;
+
+    std::string err;
+    const auto files = listGameFiles(a.dir, id, cfg.records[index].serialStr(),
+                                     cfg.records[index].parts, &err);
+    if (!err.empty()) { std::printf("ERROR: %s\n", err.c_str()); return 1; }
+    std::printf("%-52s %12s %10s\n", "FILE", "SIZE", "LBA");
+    for (const IsoEntry& e : files)
+        std::printf("%-52s %12s %10u\n", e.path.substr(0, 52).c_str(),
+                    humanSize(e.size).c_str(), e.lba);
+    std::printf("%zu file(s)\n", files.size());
+    return 0;
+}
+
+static int cmdExtract(const Args& a) {
+    UlCfg cfg;
+    size_t index = 0;
+    std::string id;
+    if (!resolveGame(a, cfg, index, id)) return 2;
+    if (a.path.empty()) { usage(); return 2; }
+
+    std::string err;
+    const auto files = listGameFiles(a.dir, id, cfg.records[index].serialStr(),
+                                     cfg.records[index].parts, &err);
+    if (!err.empty()) { std::printf("ERROR: %s\n", err.c_str()); return 1; }
+
+    // wildcard selection over the path / base name
+    std::vector<IsoEntry> selection;
+    for (const IsoEntry& e : files)
+        if (matchPattern(e.name, a.path) || matchPattern(e.path, a.path))
+            selection.push_back(e);
+    if (selection.empty()) {
+        std::printf("ERROR: no file matching \"%s\"; run `usbutils files %d -d %s`\n",
+                    a.path.c_str(), a.index, a.dir.c_str());
+        return 1;
+    }
+
+    const bool many = selection.size() > 1;
+    if (many && a.out.empty()) {
+        std::printf("ERROR: %zu files match; pass an output directory with -o\n",
+                    selection.size());
+        return 1;
+    }
+    std::string outDir = a.out;
+    if (many) {
+        std::error_code ec;
+        std::filesystem::create_directories(outDir, ec);
+        if (ec) { std::printf("ERROR: cannot create %s\n", outDir.c_str()); return 1; }
+    }
+
+    bool ok = true;
+    for (const IsoEntry& e : selection) {
+        std::string outPath = a.out;
+        if (many) {
+            std::string name = e.name;
+            for (char& c : name) if (c == '\\' || c == '/') c = '_';
+            outPath = (outDir.back() == '/' || outDir.back() == '\\')
+                          ? outDir + name : outDir + "/" + name;
+        } else if (outPath.empty()) {
+            outPath = e.name;                  // single match: default name
+        }
+        std::printf("extracting %s ...\n", e.path.c_str());
+        if (!extractGameFile(a.dir, id, cfg.records[index].serialStr(),
+                             cfg.records[index].parts, e, outPath,
+                             makeProgress())) {
+            std::printf("\nERROR: extract failed for %s\n", e.path.c_str());
+            ok = false;
+        } else {
+            std::printf("\n  -> %s\n", outPath.c_str());
+        }
+    }
+    return ok ? 0 : 1;
+}
+
+static int cmdInject(const Args& a) {
+    UlCfg cfg;
+    size_t index = 0;
+    std::string id;
+    if (!resolveGame(a, cfg, index, id)) return 2;
+    if (a.path.empty() || a.file.empty()) { usage(); return 2; }
+
+    const InjectResult r = injectGameFile(a.dir, id,
+                                          cfg.records[index].serialStr(),
+                                          cfg.records[index].parts,
+                                          a.path, a.file, makeProgress());
+    std::printf("\n");
+    if (!r.ok) { std::printf("ERROR: %s\n", r.error.c_str()); return 1; }
+    std::printf("replaced %s (%s)\n", r.path.c_str(), humanSize(r.bytes).c_str());
+    return 0;
+}
+
+static int cmdCopyMove(const Args& a, bool move) {
+    if (a.dir.empty() || a.dest.empty() || (a.index < 0 && !a.all)) { usage(); return 2; }
+    UlCfg cfg;
+    if (!cfg.load(a.dir)) { std::printf("ERROR: no ul.cfg\n"); return 1; }
+    if (a.index >= (int)cfg.records.size() && !a.all) { std::printf("ERROR: bad index\n"); return 1; }
+
+    // collect indices (all, or the single one) — collected up front
+    // because a move invalidates positions
+    std::vector<size_t> indices;
+    if (a.all)
+        for (size_t i = 0; i < cfg.records.size(); ++i) indices.push_back(i);
+    else
+        indices.push_back(static_cast<size_t>(a.index));
+
+    bool ok = true;
+    size_t done = 0;
+    for (size_t idx : indices) {
+        const size_t cur = move ? idx - done : idx;   // records shift after a move
+        if (cur >= cfg.records.size()) { ok = false; break; }
+        const std::string name = cfg.records[cur].nameStr();
+        std::printf("%s \"%s\" ...\n", move ? "moving" : "copying", name.c_str());
+        const CopyResult r = copyGame(a.dir, cfg, cur, a.dest, move, makeProgress());
+        std::printf("\n");
+        if (!r.ok) {
+            std::printf("ERROR: %s\n", r.error.c_str());
+            ok = false;
+            break;
+        }
+        ++done;
+        std::printf("  %zu/%zu done (%s, %d file(s))\n", done, indices.size(),
+                    humanSize(r.copiedBytes).c_str(), r.filesWritten);
+    }
+    if (ok && !indices.empty())
+        std::printf("%s %zu game(s) to %s\n", move ? "moved" : "copied",
+                    indices.size(), a.dest.c_str());
+    return ok ? 0 : 1;
+}
+
+static int cmdReport(const Args& a) {
+    if (a.dir.empty()) { usage(); return 2; }
+    UlCfg cfg;
+    if (!cfg.load(a.dir)) { std::printf("ERROR: no ul.cfg in %s\n", a.dir.c_str()); return 1; }
+
+    const std::string rep = generateReport(a.dir, cfg);
+    std::fputs(rep.c_str(), stdout);
+
+    if (!a.out.empty()) {
+        FILE* f = std::fopen(a.out.c_str(), "wb");
+        if (!f) { std::printf("ERROR: cannot write %s\n", a.out.c_str()); return 1; }
+        std::fwrite(rep.data(), 1, rep.size(), f);
+        std::fclose(f);
+        std::printf("\nreport saved to %s\n", a.out.c_str());
+    }
+    return 0;
+}
+
+static int cmdFix(const Args& a) {
+    if (a.dir.empty()) { usage(); return 2; }
+    UlCfg cfg;
+    if (!cfg.load(a.dir)) { std::printf("ERROR: no ul.cfg in %s\n", a.dir.c_str()); return 1; }
+
+    const auto fixes = fixBrokenSerials(a.dir, cfg, a.apply);
+    if (fixes.empty()) { std::printf("no broken serial codes found\n"); return 0; }
+
+    for (const SerialFix& f : fixes) {
+        std::printf("[%zu] %-32s %s -> %s%s\n", f.index, f.gameName.c_str(),
+                    f.oldSerial.c_str(),
+                    f.newSerial.empty() ? "(unknown - not fixable)" : f.newSerial.c_str(),
+                    f.applied ? "  [fixed]" : "");
+    }
+    if (!a.apply)
+        std::printf("run with --apply to fix the records and rename the chunk files\n");
+    else {
+        int failed = 0;
+        for (const SerialFix& f : fixes)
+            if (!f.applied && !f.newSerial.empty()) ++failed;
+        if (failed) std::printf("WARNING: %d fix(es) could not be applied\n", failed);
+    }
+    return 0;
+}
+
 int main(int argc, char** argv) {
     const Args a = parse(argc, argv);
     if (a.cmd.empty()) { usage(); return 2; }
@@ -526,6 +754,14 @@ int main(int argc, char** argv) {
     if (a.cmd == "unrip")   return cmdUnrip(a);
     if (a.cmd == "dnas")    return cmdDnas(a);
     if (a.cmd == "ps2load") return cmdPs2Load(a);
+    if (a.cmd == "find")    return cmdFind(a);
+    if (a.cmd == "files")   return cmdFiles(a);
+    if (a.cmd == "extract") return cmdExtract(a);
+    if (a.cmd == "inject")  return cmdInject(a);
+    if (a.cmd == "copy")    return cmdCopyMove(a, false);
+    if (a.cmd == "move")    return cmdCopyMove(a, true);
+    if (a.cmd == "report")  return cmdReport(a);
+    if (a.cmd == "fix")     return cmdFix(a);
     if (a.cmd == "id") {
         if (a.name.empty()) { usage(); return 2; }
         std::printf("%s\n", gameIdHex(a.name).c_str());

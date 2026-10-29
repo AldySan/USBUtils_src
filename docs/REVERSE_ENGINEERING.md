@@ -42,17 +42,25 @@ notification, and the USB HDD game management core (`USBHDH*`).
 * Open ISO to Explore/Modify
 * **Create GAME from ISO** / **Create GAME from CD/DVD**
 * Recover games (scan `ul.*.00` orphans), list of recovery (`usbutil.rcn`)
-* View/Edit `ul.cfg`
-* Find file in games
+* View/Edit `ul.cfg` (ported as `list`/`rename`/`remove`/`fix`)
+* Find file in games (ported: `usbutils find`, wildcard + size search)
 * **Patch DNAS/IOPR/IRX** (replace IOPRP images inside installed games)
 * **PS2Load options** (swap the game's boot program for PS2LOAD.ELF —
   marker record + MSYSTEM.CNF backup + in-place SYSTEM.CNF rewrite;
   see `formats/ps2load.md`)
-* Correct code 666.66 (fix corrupted size entries)
+* Correct code 666.66 — the original compares 11 chars of each game's
+  code column against the broken marker "666.66" (0x39B774..0x39B85C,
+  string @0x39B854) and re-derives the real serial from SYSTEM.CNF,
+  then renames record + chunks ("No se pudo renombrar codigo 666.66"
+  is the failure path). Ported as `usbutils fix`.
 * Structure check (verify all chunk files exist)
 * Rip GAME (video removal: activate/deactivate/coincide)
-* Restore game (partial/total)
-* Copy history, general report
+* Restore game (partial/total) — covered by `recover` + `unrip`
+* Copy/Move games, copy history (ported: `usbutils copy`/`move`), general
+  report (ported: `usbutils report`)
+* Per-game file explore / extract / "INJECT and match" (ported:
+  `usbutils files`/`extract`/`inject` — same-size in-place replacement)
+* Create GAME from CD/DVD (POSIX device paths work: `install /dev/sr0`)
 * Game name database (`usbutil.ljs` — 1432 tested-game notes)
 
 ## 3. Key code addresses (English exe, image base 0x300000)

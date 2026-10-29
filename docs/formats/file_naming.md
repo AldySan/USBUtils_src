@@ -45,5 +45,10 @@ chunk without a matching `ul.cfg` record is a recovery candidate.
 ## Size accounting
 
 Total game size = Σ chunk file sizes. The "Correct code 666.66" menu item
-fixes `ul.cfg` records whose computed size renders as the magic broken
-value `666.66` (size fields corrupted by third-party tools).
+fixes `ul.cfg` records whose **serial** field holds the magic broken value
+`666.66` (written by some third-party tools): the real serial is re-derived
+from the game's own `SYSTEM.CNF` (BOOT2 line) and both the record and the
+chunk file names are updated (`ul.<ID>.666.66.NN` -> `ul.<ID>.<serial>.NN`).
+The original compares 11 chars of the game-list code column against the
+marker string at 0x39B854; "No se pudo renombrar codigo 666.66" is the
+failure path when the serial cannot be re-derived.

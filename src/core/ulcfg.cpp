@@ -5,6 +5,10 @@
 
 #include <cstdio>
 #include <algorithm>
+#include <filesystem>
+#include <system_error>
+
+namespace fs = std::filesystem;
 
 namespace usbutils {
 
@@ -113,6 +117,34 @@ bool UlCfg::renameGame(size_t index, const std::string& newName) {
             return false;
     }
     r.setName(newName);
+    return save();
+}
+
+bool UlCfg::renameSerial(size_t index, const std::string& newSerial) {
+    if (index >= records.size()) return false;
+    UlCfgRecord& r = records[index];
+
+    const std::string idHex     = gameIdHex(r.nameStr());
+    const std::string oldSerial = r.serialStr();
+    if (oldSerial == newSerial) return true;
+
+    // ul.<ID>.<old>.NN -> ul.<ID>.<new>.NN (the "rename code" part of the
+    // original's "Correct code 666.66" flow — "No se pudo renombrar
+    // codigo 666.66" is the failure path).
+    std::error_code ec;
+    for (uint32_t i = 0; i < r.parts; ++i) {
+        const std::string from = joinPath(dir, chunkFileName(idHex, oldSerial, i));
+        const std::string to   = joinPath(dir, chunkFileName(idHex, newSerial, i));
+        fs::rename(from, to, ec);
+        if (ec) return false;
+    }
+    // carry the video-rip sidecar along (best effort — may not exist)
+    {
+        const std::string from = joinPath(dir, chunkFileName(idHex, oldSerial, 0) + ".rip");
+        const std::string to   = joinPath(dir, chunkFileName(idHex, newSerial, 0) + ".rip");
+        fs::rename(from, to, ec);   // ignore errors
+    }
+    r.setSerial(newSerial);
     return save();
 }
 

@@ -70,6 +70,11 @@ struct UlCfg {
     /// Rename a game: rewrite ul.cfg + rename all chunk files.
     bool renameGame(size_t index, const std::string& newName);
 
+    /// Fix a record's serial ("Correct code 666.66"): rewrite ul.cfg,
+    /// rename the chunk files (ul.<ID>.<old>.NN -> ul.<ID>.<new>.NN) and
+    /// carry the video-rip sidecar along. Game name and id stay the same.
+    bool renameSerial(size_t index, const std::string& newSerial);
+
     /// Find record index whose chunk files match idHex+serial, or SIZE_MAX.
     size_t findByIdSerial(const std::string& idHex, const std::string& serial) const;
 };
