@@ -3,6 +3,7 @@
 
 #include "../core/gamefile.h"
 #include "../core/ulid.h"
+#include "workerthread.h"
 
 #include <QTableWidget>
 #include <QHeaderView>
@@ -193,7 +194,7 @@ void VideoRipDialog::runJob(const QString& runningText,
     btnRip_->setEnabled(false);
     btnRestore_->setEnabled(false);
 
-    QThread* th = QThread::create([this, job, onDone, cancelled, dlg]() {
+    QThread* th = new usbutils::WorkerThread([this, job, onDone, cancelled, dlg]() {
         const RipResult r = job(
             [this, dlg](uint64_t done, uint64_t total) {
                 QMetaObject::invokeMethod(this, [dlg, done, total]() {

@@ -21,6 +21,7 @@ class QProgressBar;
 class QLabel;
 class QPushButton;
 class QWidget;
+class QThread;
 
 namespace usbutils { struct OrphanGame; }
 
@@ -35,6 +36,7 @@ class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
     explicit MainWindow(QWidget* parent = nullptr);
+    ~MainWindow() override;
 
 protected:
     void closeEvent(QCloseEvent* ev) override;
@@ -92,4 +94,5 @@ private:
     std::unique_ptr<usbutils::UlCfg> cfg_;
     int busyJobs_ = 0;
     bool updatePending_ = false;             ///< an update dialog is showing
+    QThread* updateThread_ = nullptr;        ///< in-flight startup update check
 };

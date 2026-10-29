@@ -2,6 +2,7 @@
 #include "finddialog.h"
 
 #include "../core/ulid.h"
+#include "workerthread.h"
 
 #include <QLineEdit>
 #include <QTableWidget>
@@ -104,7 +105,7 @@ void FindDialog::search() {
     cfg.records = records_;
     const QString dir = dir_;
 
-    QThread* th = QThread::create([this, dir, cfg, pattern, dlg]() {
+    QThread* th = new usbutils::WorkerThread([this, dir, cfg, pattern, dlg]() {
         const auto hits = findFileInGames(dir.toStdString(), cfg, pattern, 0);
         QMetaObject::invokeMethod(this, [this, hits, dlg]() {
             hits_ = hits;
@@ -161,7 +162,7 @@ void FindDialog::extractSelected() {
         cancelled->store(true);
     });
 
-    QThread* th = QThread::create(
+    QThread* th = new usbutils::WorkerThread(
         [this, dir, idHex, serial, parts, entry, out, dlg, cancelled]() {
         const bool ok = extractGameFile(dir.toStdString(), idHex, serial,
                                         parts, entry, out.toStdString(),

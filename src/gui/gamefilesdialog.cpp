@@ -3,6 +3,7 @@
 
 #include "../core/gameops.h"
 #include "../core/port.h"
+#include "workerthread.h"
 
 #include <QTableWidget>
 #include <QHeaderView>
@@ -101,7 +102,7 @@ void GameFilesDialog::loadFiles() {
     const QString dir = dir_, idHex = idHex_, serial = serial_;
     const uint32_t parts = parts_;
 
-    QThread* th = QThread::create([this, dir, idHex, serial, parts, dlg]() {
+    QThread* th = new usbutils::WorkerThread([this, dir, idHex, serial, parts, dlg]() {
         std::string err;
         const auto files = listGameFiles(dir.toStdString(),
                                          idHex.toStdString(),
@@ -164,7 +165,7 @@ void GameFilesDialog::extractSelected() {
         cancelled->store(true);
     });
 
-    QThread* th = QThread::create(
+    QThread* th = new usbutils::WorkerThread(
         [this, dir, idHex, serial, parts, entry, out, dlg, cancelled]() {
         const bool ok = extractGameFile(
             dir.toStdString(), idHex.toStdString(), serial.toStdString(),
@@ -243,7 +244,7 @@ void GameFilesDialog::replaceFile() {
         cancelled->store(true);
     });
 
-    QThread* th = QThread::create(
+    QThread* th = new usbutils::WorkerThread(
         [this, dir, idHex, serial, parts, path, local, dlg, cancelled]() {
         const InjectResult r = injectGameFile(
             dir.toStdString(), idHex.toStdString(), serial.toStdString(),

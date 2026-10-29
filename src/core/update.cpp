@@ -43,7 +43,9 @@ constexpr size_t kMaxResponse = 64 * 1024;    // release JSON is ~2-5 KB
 std::string httpGet(const char* url, int timeoutSec) {
     // split "https://api.github.com/.../latest" into host + path
     std::string u = url;
-    const size_t scheme = u.find("://") + 3;
+    const size_t sep = u.find("://");
+    if (sep == std::string::npos) return {};
+    const size_t scheme = sep + 3;
     const size_t slash = u.find('/', scheme);
     const std::string host = u.substr(scheme, slash - scheme);
     const std::string path = slash == std::string::npos ? "/" : u.substr(slash);
