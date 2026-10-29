@@ -55,6 +55,10 @@ if(USBUTILS_BUILD_GUI)
         src/gui/main.cpp
         src/gui/mainwindow.cpp
         src/gui/mainwindow.h
+        src/gui/videoripdialog.cpp
+        src/gui/videoripdialog.h
+        src/gui/dnasdialog.cpp
+        src/gui/dnasdialog.h
     )
     target_link_libraries(usbutils-gui PRIVATE
         usbutils_core Qt${QT_VERSION_MAJOR}::Widgets)
