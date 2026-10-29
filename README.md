@@ -19,8 +19,9 @@ binary** and is maintained as a modern, documented, testable codebase.
 | Game id = non-standard CRC-32 of the name (as the original) | ✅ |
 | Rename / remove games (renames chunk files) | ✅ |
 | Structure check (missing parts, size accounting) | ✅ |
-| Export installed game back to ISO | ✅ |
+| Export installed game back to ISO (`export all` too) | ✅ |
 | Recover orphan `ul.*.00` games | ✅ |
+| **Video rip — turn in-game videos off / back on (reversible)** | ✅ |
 | `usbutil.rcn` recovery database codec | ✅ |
 | `usbutil.ljs` game compatibility database | ✅ |
 | DNAS/IOPRP package (`usbutil.dna` + `.dni`) listing & patching | ✅ |
@@ -29,7 +30,9 @@ binary** and is maintained as a modern, documented, testable codebase.
 
 Not ported from the original: the ASPI/SPTI CD/DVD ripping + burning stack
 and the MicroUDF bootable-image builder (modern OSes burn ISOs natively);
-video ripping is documented in `docs/formats/video_rip.md`.
+PS2Load injection is documented in `docs/formats/video_rip.md` but not
+implemented yet. The video rip is fully implemented — see
+[`docs/formats/video_rip.md`](docs/formats/video_rip.md).
 
 ## Building
 
@@ -52,13 +55,25 @@ usbutils list            -d /media/usb0      # list games on a drive
 usbutils install game.iso -d /media/usb0 -n "Shadow of the Colossus"
 usbutils check           -d /media/usb0      # structure check
 usbutils export 0        -d /media/usb0 -o backup.iso
+usbutils export all      -d /media/usb0 -o /tmp/backups/   # every game
 usbutils rename 0        -d /media/usb0 -n "New Name"
 usbutils remove 0        -d /media/usb0
 usbutils recover         -d /media/usb0 --apply
+usbutils videos 0        -d /media/usb0      # list in-game video files
+usbutils rip 0           -d /media/usb0      # turn videos off (reversible)
+usbutils rip 0           -d /media/usb0 --only MOVIES\\INTRO.PSS
+usbutils rip 0           -d /media/usb0 --no-backup   # destructive, like 2009
+usbutils unrip 0         -d /media/usb0      # turn videos back on
 usbutils id              -n "Game Name"      # show the computed ul id
 usbutils dnas list       -p usbutil.dni
 usbutils dnas patch 0    -d /media/usb0 -p usbutil.dni --dna usbutil.dna -v 300
+usbutils --version
 ```
+
+The GUI covers the same ground without a terminal: drive picker, game
+list (context menu, F2 rename, Del remove), install/export/rename/remove,
+structure check, recovery, the video-rip dialog and the DNAS patch dialog —
+all long operations run on worker threads with cancelable progress bars.
 
 ## Repository layout
 
@@ -70,6 +85,11 @@ src/gui/         Qt Widgets application
 tests/           core unit + end-to-end tests
 data/            game database and assets shipped with the original tool
 ```
+
+Key engine pieces: `src/core/gamestream.cpp` (random-access view over a
+game's chunk files), `src/core/iso9660.cpp` (`walkIso` directory walker
+shared by serial extraction, the video ripper and the DNAS locator) and
+`src/core/videorip.cpp` (rip/restore with the `.rip` sidecar backup).
 
 ## License
 

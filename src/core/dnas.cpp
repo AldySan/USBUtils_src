@@ -1,20 +1,23 @@
 // SPDX-License-Identifier: MIT
 #include "dnas.h"
 #include "gamefile.h"
+#include "gamestream.h"
+#include "iso9660.h"
+#include "port.h"
 
 #include <cstdio>
 #include <cstring>
-#include "port.h"
 #include <cstdlib>
 #include <algorithm>
-#include "port.h"
 
 namespace usbutils {
 
-static std::string joinPath(const std::string& dir, const std::string& file) {
-    if (dir.empty()) return file;
-    if (dir.back() == '/' || dir.back() == '\\') return dir + file;
-    return dir + "/" + file;
+static std::string toLower(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s)
+        out += static_cast<char>((c >= 'A' && c <= 'Z') ? c + 32 : c);
+    return out;
 }
 
 bool DnasPackage::loadIndex(const std::string& dniPath) {
@@ -56,7 +59,7 @@ void DnasPackage::setDataPath(const std::string& dnaPath) {
     dnaPath_ = dnaPath;
     FILE* f = std::fopen(dnaPath.c_str(), "rb");
     if (f) {
-        if (std::fseek(f, 0, SEEK_END) == 0)
+        if (usbutils::seek64(f, 0, SEEK_END))
             blobSize_ = static_cast<uint64_t>(usbutils::tell64(f));
         std::fclose(f);
     }
@@ -95,7 +98,7 @@ bool DnasPackage::extract(const std::string& version,
 
     FILE* in = std::fopen(dnaPath_.c_str(), "rb");
     if (!in) return false;
-    if (std::fseek(in, static_cast<long>(off), SEEK_SET) != 0) {
+    if (!usbutils::seek64(in, static_cast<int64_t>(off))) {
         std::fclose(in);
         return false;
     }
@@ -118,44 +121,83 @@ bool DnasPackage::extract(const std::string& version,
 }
 
 // ---------------------------------------------------------------------------
+// IOPRP location
+// ---------------------------------------------------------------------------
 
-/// Scan the game stream for the "RESET\0\0\0" IOPRP magic.
-bool locateEmbeddedIoprp(const std::string& dir, const std::string& idHex,
-                         const std::string& serial, uint32_t parts,
-                         uint32_t& chunkIdx, uint64_t& offset, uint32_t& length) {
+/// Fallback: scan the stream for the "RESET\0\0\0" IOPRP magic. Only used
+/// when the image has no IOPRP*.IMG directory entry (non-standard rips).
+static bool scanForIoprpMagic(GameStream& stream, uint64_t& offset,
+                              uint32_t& length) {
     static const uint8_t magic[8] = {'R','E','S','E','T',0,0,0};
 
     std::vector<uint8_t> buf(4 * 1024 * 1024);
-    uint64_t carrySize = 0;
     std::vector<uint8_t> carry;
-
-    for (uint32_t i = 0; i < parts; ++i) {
-        FILE* f = std::fopen(joinPath(dir, chunkFileName(idHex, serial, i)).c_str(), "rb");
-        if (!f) continue;
-        size_t n;
-        while ((n = std::fread(buf.data(), 1, buf.size(), f)) > 0) {
-            // search with carry-over from previous block
-            std::vector<uint8_t> hay = carry;
-            hay.insert(hay.end(), buf.begin(), buf.begin() + n);
-            const size_t pos = std::search(hay.begin(), hay.end(),
-                                           magic, magic + 8) - hay.begin();
-            if (pos < hay.size()) {
-                // found; image length = next "RESET" or EOF (bounded by 512 KiB)
-                uint64_t absOff = carrySize + pos;
-                std::fclose(f);
-                chunkIdx = i;
-                offset = absOff;
-                // typical IOPRP sizes: 92 KiB .. 272 KiB — cap at 512 KiB
-                length = 512 * 1024;
-                return true;
-            }
-            carry.assign(hay.end() - 7, hay.end());   // keep last 7 bytes
-            carrySize += hay.size() - 7;
+    uint64_t carryStart = 0;                     // absolute offset of carry[0]
+    uint64_t pos = 0;
+    size_t n;
+    while ((n = stream.read(pos, buf.data(), buf.size())) > 0) {
+        std::vector<uint8_t> hay = carry;
+        hay.insert(hay.end(), buf.begin(), buf.begin() + n);
+        const size_t found = std::search(hay.begin(), hay.end(),
+                                         magic, magic + 8) - hay.begin();
+        if (found < hay.size()) {
+            offset = carryStart + found;
+            length = 512 * 1024;                 // upper bound, see caller
+            if (offset + length > stream.size())
+                length = static_cast<uint32_t>(stream.size() - offset);
+            return true;
         }
-        std::fclose(f);
+        if (hay.size() >= 7) {
+            carry.assign(hay.end() - 7, hay.end());
+            carryStart += hay.size() - 7;
+        } else {
+            carry = hay;                          // short tail at EOF — no UB
+        }
+        pos += n;
     }
     return false;
 }
+
+bool locateIoprp(const std::string& dir, const std::string& idHex,
+                 const std::string& serial, uint32_t parts,
+                 uint64_t& offset, uint32_t& length) {
+    GameStream stream;
+    if (!stream.open(dir, idHex, serial, parts) || stream.size() == 0)
+        return false;
+
+    // Preferred: exact IOPRP*.IMG directory entry — gives the precise
+    // extent, so patching never writes beyond the real image.
+    bool found = false;
+    uint64_t fOff = 0;
+    uint64_t fLen = 0;
+    const IsoReadFn read = [&stream](uint64_t off, void* dst, size_t n) {
+        return stream.read(off, dst, n) == n;
+    };
+    walkIso(read, [&](const IsoEntry& e) {
+        if (found || e.isDir) return true;
+        const std::string low = toLower(e.name);
+        if (low.compare(0, 5, "ioprp") == 0 &&
+            low.size() > 9 && low.compare(low.size() - 4, 4, ".img") == 0) {
+            fOff = static_cast<uint64_t>(e.lba) * 2048ull;
+            fLen = e.size;
+            found = true;
+            return false;
+        }
+        return true;
+    });
+    if (found && fOff + fLen <= stream.size() && fLen > 0) {
+        offset = fOff;
+        length = static_cast<uint32_t>(fLen);
+        return true;
+    }
+
+    // Fallback: magic scan (bounded by the stream end).
+    return scanForIoprpMagic(stream, offset, length);
+}
+
+// ---------------------------------------------------------------------------
+// patching
+// ---------------------------------------------------------------------------
 
 int DnasPackage::patchGame(const std::string& dir, const std::string& idHex,
                            const std::string& serial, uint32_t parts,
@@ -164,10 +206,9 @@ int DnasPackage::patchGame(const std::string& dir, const std::string& idHex,
     uint32_t repSize = 0;
     if (!findImage(version, repOff, repSize)) return -1;
 
-    uint32_t chunkIdx = 0;
     uint64_t offset = 0;
     uint32_t length = 0;
-    if (!locateEmbeddedIoprp(dir, idHex, serial, parts, chunkIdx, offset, length))
+    if (!locateIoprp(dir, idHex, serial, parts, offset, length))
         return -1;
     if (repSize > length) return -1;   // must fit the original slot
 
@@ -175,23 +216,23 @@ int DnasPackage::patchGame(const std::string& dir, const std::string& idHex,
     std::vector<uint8_t> img(repSize);
     FILE* dna = std::fopen(dnaPath_.c_str(), "rb");
     if (!dna) return -1;
-    bool ok = std::fseek(dna, static_cast<long>(repOff), SEEK_SET) == 0
+    bool ok = usbutils::seek64(dna, static_cast<int64_t>(repOff))
            && std::fread(img.data(), 1, repSize, dna) == repSize;
     std::fclose(dna);
     if (!ok) return -1;
 
-    // Overwrite in place; pad the remainder of the slot with zeros.
-    const std::string path = joinPath(dir, chunkFileName(idHex, serial, chunkIdx));
-    FILE* f = std::fopen(path.c_str(), "r+b");
-    if (!f) return -1;
-    ok = std::fseek(f, static_cast<long>(offset), SEEK_SET) == 0;
-    if (ok) ok = std::fwrite(img.data(), 1, repSize, f) == repSize;
+    // Overwrite in place through the chunk stream; pad the remainder of
+    // the exact slot with zeros.
+    GameStream stream;
+    if (!stream.open(dir, idHex, serial, parts)) return -1;
+    ok = stream.write(offset, img.data(), repSize);
     if (ok) {
         const uint32_t pad = length - repSize;
-        std::vector<uint8_t> zeros(pad, 0);
-        if (pad) ok = std::fwrite(zeros.data(), 1, pad, f) == pad;
+        if (pad) {
+            std::vector<uint8_t> zeros(pad, 0);
+            ok = stream.write(offset + repSize, zeros.data(), pad);
+        }
     }
-    std::fclose(f);
     return ok ? 1 : -1;
 }
 

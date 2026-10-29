@@ -10,12 +10,6 @@
 
 namespace usbutils {
 
-static std::string joinPath(const std::string& dir, const std::string& file) {
-    if (dir.empty()) return file;
-    if (dir.back() == '/' || dir.back() == '\\') return dir + file;
-    return dir + "/" + file;
-}
-
 /// Create the destination directory when missing (mkdir -p; the original
 /// assumed the USB drive root already existed, we are friendlier).
 static bool ensureDir(const std::string& dir) {
@@ -86,7 +80,7 @@ InstallResult installIso(const std::string& isoPath, const std::string& dir,
     bool ok = true;
 
     for (uint32_t i = 0; i < parts && ok; ++i) {
-        if (cancelled && cancelled()) { ok = false; break; }
+        if (cancelled && cancelled()) { ok = false; res.error = "cancelled"; break; }
         const uint64_t remaining = isoSize - done;
         const uint64_t chunkLeft =
             remaining > kChunkSize ? kChunkSize : remaining;
@@ -95,6 +89,9 @@ InstallResult installIso(const std::string& isoPath, const std::string& dir,
 
         FILE* out = std::fopen(chunkPath.c_str(), "wb");
         if (!out) { ok = false; res.error = "cannot create " + chunkPath; break; }
+        // register immediately: a half-written chunk must be cleaned up
+        // on failure too (it is NOT a valid part on disk)
+        res.writtenFiles.push_back(chunkPath);
 
         uint64_t written = 0;
         while (written < chunkLeft) {
@@ -110,7 +107,6 @@ InstallResult installIso(const std::string& isoPath, const std::string& dir,
             if (progress) progress(done, isoSize);
         }
         std::fclose(out);
-        if (ok) res.writtenFiles.push_back(chunkPath);
     }
     std::fclose(in);
 

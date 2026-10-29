@@ -4,47 +4,63 @@
  *
  *   usbutils list                       -d <dir>
  *   usbutils install <iso>              -d <dir> [-n "Game Name"]
- *   usbutils export <index|all>         -d <dir> -o <file.iso>
+ *   usbutils export <index|all>         -d <dir> -o <file.iso | outdir>
  *   usbutils remove <index>             -d <dir>
  *   usbutils rename <index> -n "Name"   -d <dir>
  *   usbutils check                      -d <dir>
  *   usbutils recover                    -d <dir> [--apply]
+ *   usbutils videos <index>             -d <dir>
+ *   usbutils rip <index>                -d <dir> [--all | --only p1,p2] [--no-backup]
+ *   usbutils unrip <index>              -d <dir>
  *   usbutils dnas list                  -p <pkg.dni>
- *   usbutils dnas patch <index> -v <ver> -d <dir> -p <pkg.dni> --dna <pkg.dna>
+ *   usbutils dnas patch <index>         -d <dir> -p <pkg.dni> --dna <pkg.dna> -v <ver>
  *   usbutils drives
+ *   usbutils id -n "Name"               (show computed game id)
  */
 #include "../core/ulcfg.h"
 #include "../core/installer.h"
 #include "../core/gamefile.h"
+#include "../core/gamestream.h"
 #include "../core/ulid.h"
 #include "../core/recovery.h"
 #include "../core/dnas.h"
+#include "../core/videorip.h"
 #include "../core/gamedb.h"
 #include "../core/usbdevice.h"
 
+#ifndef USBUTILS_VERSION
+#define USBUTILS_VERSION "0.0.1"
+#endif
+
 #include <cstdio>
 #include <cstring>
+#include <cctype>
 #include <string>
 #include <vector>
 #include <functional>
+#include <filesystem>
 
 using namespace usbutils;
 
 static void usage() {
     std::printf(
-        "USBUtils CLI - PS2 USBExtreme game manager (C++ reimplementation)\n"
+        "USBUtils CLI %s - PS2 USBExtreme game manager (C++ reimplementation)\n"
         "Usage:\n"
         "  usbutils list                 -d <dir>\n"
         "  usbutils install <iso>        -d <dir> [-n \"Game Name\"]\n"
-        "  usbutils export <index|all>   -d <dir> -o <file.iso>\n"
+        "  usbutils export <index|all>   -d <dir> -o <file.iso | outdir>\n"
         "  usbutils remove <index>       -d <dir>\n"
         "  usbutils rename <index>       -d <dir> -n \"New Name\"\n"
         "  usbutils check                -d <dir>\n"
         "  usbutils recover              -d <dir> [--apply]\n"
+        "  usbutils videos <index>       -d <dir>\n"
+        "  usbutils rip <index>          -d <dir> [--all | --only path,...] [--no-backup]\n"
+        "  usbutils unrip <index>        -d <dir>   (restore ripped videos)\n"
         "  usbutils id                   -n \"Name\"   (show computed game id)\n"
         "  usbutils drives\n"
         "  usbutils dnas list            -p <usbutil.dni>\n"
-        "  usbutils dnas patch <index>   -d <dir> -p <usbutil.dni> --dna <usbutil.dna> -v <ver>\n");
+        "  usbutils dnas patch <index>   -d <dir> -p <usbutil.dni> --dna <usbutil.dna> -v <ver>\n"
+        "  usbutils --version\n", USBUTILS_VERSION);
 }
 
 static std::string humanSize(uint64_t b) {
@@ -58,10 +74,17 @@ static std::string humanSize(uint64_t b) {
     return out;
 }
 
+static ProgressFn makeProgress() {
+    return [](uint64_t done, uint64_t total) {
+        std::printf("\r  %s / %s", humanSize(done).c_str(), humanSize(total).c_str());
+        std::fflush(stdout);
+    };
+}
+
 struct Args {
-    std::string cmd, dir, iso, name, out, dni, dna, ver;
+    std::string cmd, dir, iso, name, out, dni, dna, ver, only;
     int index = -1;
-    bool all = false, apply = false;
+    bool all = false, apply = false, noBackup = false;
 };
 
 static Args parse(int argc, char** argv) {
@@ -79,14 +102,27 @@ static Args parse(int argc, char** argv) {
         else if (s == "-p") a.dni = next();
         else if (s == "--dna") a.dna = next();
         else if (s == "-v") a.ver = next();
+        else if (s == "--only") a.only = next();
         else if (s == "--all") a.all = true;
         else if (s == "--apply") a.apply = true;
+        else if (s == "--no-backup") a.noBackup = true;
         else if (s == "all") a.all = true;
         else if (std::isdigit(static_cast<unsigned char>(s[0])) && s.find_first_not_of("0123456789") == std::string::npos)
             a.index = std::atoi(s.c_str());
         else if (a.iso.empty() && a.cmd == "install") a.iso = s;
     }
     return a;
+}
+
+/// Resolve the record + computed id for commands that take an index.
+static bool resolveGame(const Args& a, UlCfg& cfg, size_t& index,
+                        std::string& idHex) {
+    if (a.dir.empty() || a.index < 0) { usage(); return false; }
+    if (!cfg.load(a.dir)) { std::printf("ERROR: no ul.cfg in %s\n", a.dir.c_str()); return false; }
+    if (a.index >= (int)cfg.records.size()) { std::printf("ERROR: bad index\n"); return false; }
+    index = static_cast<size_t>(a.index);
+    idHex = gameIdHex(cfg.records[index].nameStr());
+    return true;
 }
 
 static int cmdList(const Args& a) {
@@ -114,12 +150,7 @@ static int cmdInstall(const Args& a) {
     InstallOptions opt;
     opt.gameName = a.name;
 
-    ProgressFn prog = [](uint64_t done, uint64_t total) {
-        std::printf("\r  %s / %s", humanSize(done).c_str(), humanSize(total).c_str());
-        std::fflush(stdout);
-    };
-
-    const InstallResult r = installIso(a.iso, a.dir, opt, prog);
+    const InstallResult r = installIso(a.iso, a.dir, opt, makeProgress());
     std::printf("\n");
     if (!r.ok) { std::printf("ERROR: %s\n", r.error.c_str()); return 1; }
     std::printf("installed: %s\n  id=%s serial=%s parts=%u size=%s\n",
@@ -129,20 +160,40 @@ static int cmdInstall(const Args& a) {
 }
 
 static int cmdExport(const Args& a) {
-    if (a.dir.empty() || a.out.empty() || a.index < 0) { usage(); return 2; }
+    if (a.dir.empty() || a.out.empty() || (a.index < 0 && !a.all)) { usage(); return 2; }
     UlCfg cfg;
     if (!cfg.load(a.dir)) { std::printf("ERROR: no ul.cfg\n"); return 1; }
-    if (a.index >= (int)cfg.records.size()) { std::printf("ERROR: bad index\n"); return 1; }
 
-    const UlCfgRecord& r = cfg.records[a.index];
-    ProgressFn prog = [](uint64_t d, uint64_t t) {
-        std::printf("\r  %s / %s", humanSize(d).c_str(), humanSize(t).c_str());
-        std::fflush(stdout);
+    const auto exportOne = [&](size_t i, const std::string& outPath) -> bool {
+        const bool ok = exportIso(a.dir, cfg.records[i], outPath, makeProgress());
+        std::printf("\n");
+        if (ok) std::printf("exported %s\n", outPath.c_str());
+        else    std::printf("ERROR: export failed (%s)\n", outPath.c_str());
+        return ok;
     };
-    const bool ok = exportIso(a.dir, r, a.out, prog);
-    std::printf("\n");
-    std::printf(ok ? "exported %s\n" : "ERROR: export failed\n", a.out.c_str());
-    return ok ? 0 : 1;
+
+    if (a.all) {
+        // out is treated as an output directory (created when missing)
+        std::string outDir = a.out;
+        std::error_code ec;
+        std::filesystem::create_directories(outDir, ec);
+        if (ec) { std::printf("ERROR: cannot create %s\n", outDir.c_str()); return 1; }
+        bool ok = true;
+        for (size_t i = 0; i < cfg.records.size() && ok; ++i) {
+            std::string name = cfg.records[i].nameStr();
+            for (char& c : name)
+                if (std::strchr("\\/:*?\"<>|", c)) c = '_';
+            const std::string outPath =
+                (outDir.back() == '/' || outDir.back() == '\\')
+                    ? outDir + name + ".iso"
+                    : outDir + "/" + name + ".iso";
+            ok = exportOne(i, outPath);
+        }
+        return ok ? 0 : 1;
+    }
+
+    if (a.index >= (int)cfg.records.size()) { std::printf("ERROR: bad index\n"); return 1; }
+    return exportOne(static_cast<size_t>(a.index), a.out) ? 0 : 1;
 }
 
 static int cmdRemove(const Args& a) {
@@ -188,7 +239,8 @@ static int cmdCheck(const Args& a) {
                         humanSize(rep.totalBytes).c_str());
         }
     }
-    std::printf(bad ? "%d problem(s)\n" : "structure OK (%zu games)\n", bad ? bad : cfg.records.size());
+    if (bad) std::printf("%d problem(s)\n", bad);
+    else     std::printf("structure OK (%zu games)\n", cfg.records.size());
     return bad ? 1 : 0;
 }
 
@@ -230,6 +282,126 @@ static int cmdDrives() {
     return 0;
 }
 
+// ---------------------------------------------------------------------------
+// video rip
+// ---------------------------------------------------------------------------
+
+static int cmdVideos(const Args& a) {
+    UlCfg cfg;
+    size_t index = 0;
+    std::string id;
+    if (!resolveGame(a, cfg, index, id)) return 2;
+
+    std::string err;
+    const auto videos = scanVideos(a.dir, id, cfg.records[index].serialStr(),
+                                   cfg.records[index].parts, &err);
+    if (!err.empty()) { std::printf("ERROR: %s\n", err.c_str()); return 1; }
+
+    if (videos.empty()) {
+        std::printf("no video files recognized in this game\n");
+        return 0;
+    }
+    uint64_t total = 0, blanked = 0;
+    std::printf("%-4s %-44s %10s  %s\n", "#", "FILE", "SIZE", "STATE");
+    for (size_t i = 0; i < videos.size(); ++i) {
+        const VideoEntry& v = videos[i];
+        total   += v.size;
+        blanked += v.blanked ? v.size : 0;
+        std::printf("%-4zu %-44s %10s  %s\n", i, v.path.substr(0, 44).c_str(),
+                    humanSize(v.size).c_str(),
+                    v.blanked ? (v.hasBackup ? "blanked (restorable)"
+                                            : "blanked (no backup)")
+                              : "original");
+    }
+    const uint64_t backup = videoBackupSize(a.dir, id, cfg.records[index].serialStr());
+    std::printf("videos: %zu  total %s  blanked %s\n", videos.size(),
+                humanSize(total).c_str(), humanSize(blanked).c_str());
+    if (backup) std::printf("backup file: %s\n", humanSize(backup).c_str());
+    return 0;
+}
+
+static int cmdRip(const Args& a) {
+    UlCfg cfg;
+    size_t index = 0;
+    std::string id;
+    if (!resolveGame(a, cfg, index, id)) return 2;
+
+    std::string err;
+    const auto videos = scanVideos(a.dir, id, cfg.records[index].serialStr(),
+                                   cfg.records[index].parts, &err);
+    if (!err.empty()) { std::printf("ERROR: %s\n", err.c_str()); return 1; }
+    if (videos.empty()) { std::printf("no video files recognized\n"); return 0; }
+
+    // selection: --only (comma-separated paths, case-insensitive) or everything
+    std::vector<VideoEntry> selection;
+    if (!a.only.empty()) {
+        std::vector<std::string> wanted;
+        std::string cur;
+        for (char c : a.only) {
+            if (c == ',') { wanted.push_back(cur); cur.clear(); }
+            else cur += c;
+        }
+        wanted.push_back(cur);
+        auto ieq = [](const std::string& x, const std::string& y) {
+            if (x.size() != y.size()) return false;
+            for (size_t i = 0; i < x.size(); ++i) {
+                char cx = x[i], cy = y[i];
+                if (cx >= 'A' && cx <= 'Z') cx += 32;
+                if (cy >= 'A' && cy <= 'Z') cy += 32;
+                if (cx != cy) return false;
+            }
+            return true;
+        };
+        auto baseName = [](const std::string& p) {
+            const size_t s = p.rfind('\\');
+            return s == std::string::npos ? p : p.substr(s + 1);
+        };
+        for (const VideoEntry& v : videos) {
+            for (const auto& w : wanted)
+                if (ieq(w, v.path) || ieq(w, baseName(v.path))) {
+                    selection.push_back(v);
+                    break;
+                }
+        }
+        if (selection.empty()) {
+            std::printf("ERROR: none of the --only paths matched; "
+                        "run `usbutils videos %d -d %s` to list them\n",
+                        a.index, a.dir.c_str());
+            return 1;
+        }
+    } else {
+        selection = videos;                       // default: everything
+    }
+
+    const RipResult r = ripVideos(a.dir, id, cfg.records[index].serialStr(),
+                                  cfg.records[index].parts, selection,
+                                  !a.noBackup, makeProgress());
+    std::printf("\n");
+    if (!r.ok) { std::printf("ERROR: %s\n", r.error.c_str()); return 1; }
+    if (r.rippedCount == 0) { std::printf("nothing to rip (already blanked)\n"); return 0; }
+    std::printf("ripped %u video(s), blanked %s", r.rippedCount,
+                humanSize(r.blankedBytes).c_str());
+    if (!a.noBackup)
+        std::printf(", backup %s", humanSize(r.backupBytes).c_str());
+    std::printf("\nundo with: usbutils unrip %d -d %s\n", a.index, a.dir.c_str());
+    return 0;
+}
+
+static int cmdUnrip(const Args& a) {
+    UlCfg cfg;
+    size_t index = 0;
+    std::string id;
+    if (!resolveGame(a, cfg, index, id)) return 2;
+
+    const RipResult r = restoreVideos(a.dir, id, cfg.records[index].serialStr(),
+                                      cfg.records[index].parts, makeProgress());
+    std::printf("\n");
+    if (!r.ok) { std::printf("ERROR: %s\n", r.error.c_str()); return 1; }
+    std::printf("restored %u video(s), %s\n", r.rippedCount,
+                humanSize(r.blankedBytes).c_str());
+    return 0;
+}
+
 static int cmdDnas(const Args& a) {
     if (a.dni.empty()) { usage(); return 2; }
     DnasPackage pkg;
@@ -260,6 +432,10 @@ int main(int argc, char** argv) {
     const Args a = parse(argc, argv);
     if (a.cmd.empty()) { usage(); return 2; }
 
+    if (a.cmd == "--version" || a.cmd == "version") {
+        std::printf("usbutils %s\n", USBUTILS_VERSION);
+        return 0;
+    }
     if (a.cmd == "list")    return cmdList(a);
     if (a.cmd == "install") return cmdInstall(a);
     if (a.cmd == "export")  return cmdExport(a);
@@ -268,6 +444,9 @@ int main(int argc, char** argv) {
     if (a.cmd == "check")   return cmdCheck(a);
     if (a.cmd == "recover") return cmdRecover(a);
     if (a.cmd == "drives")  return cmdDrives();
+    if (a.cmd == "videos")  return cmdVideos(a);
+    if (a.cmd == "rip")     return cmdRip(a);
+    if (a.cmd == "unrip")   return cmdUnrip(a);
     if (a.cmd == "dnas")    return cmdDnas(a);
     if (a.cmd == "id") {
         if (a.name.empty()) { usage(); return 2; }

@@ -28,7 +28,9 @@ std::vector<UsbDrive> listDrives();
 /// True when the drive root contains ul.cfg (already a game drive).
 bool probeUlCfg(const std::string& root);
 
-/// Combined check used by the GUI "is this a PS2 game drive?" indicator.
-bool looksLikeGameDrive(const UsbDrive& d);
+/// Free / total bytes of the filesystem containing `path`.
+/// Returns false when the path is not reachable.
+bool fsSpace(const std::string& path, uint64_t& freeBytes,
+             uint64_t& totalBytes);
 
 } // namespace usbutils

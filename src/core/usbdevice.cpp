@@ -28,6 +28,28 @@ bool probeUlCfg(const std::string& root) {
     return fileExists(p + "ul.cfg");
 }
 
+bool fsSpace(const std::string& path, uint64_t& freeBytes,
+             uint64_t& totalBytes) {
+    freeBytes = totalBytes = 0;
+    if (path.empty()) return false;
+#if defined(_WIN32)
+    ULARGE_INTEGER freeB{}, totalB{};
+    std::string root = path;
+    if (root.size() > 1 && root[1] == ':') root.resize(3);   // "X:\\"
+    if (!GetDiskFreeSpaceExA(root.c_str(), &freeB, &totalB, nullptr))
+        return false;
+    freeBytes  = freeB.QuadPart;
+    totalBytes = totalB.QuadPart;
+    return true;
+#else
+    struct statvfs st{};
+    if (statvfs(path.c_str(), &st) != 0) return false;
+    totalBytes = static_cast<uint64_t>(st.f_blocks) * st.f_frsize;
+    freeBytes  = static_cast<uint64_t>(st.f_bavail) * st.f_frsize;
+    return true;
+#endif
+}
+
 #if defined(_WIN32)
 
 std::vector<UsbDrive> listDrives() {
@@ -117,9 +139,5 @@ std::vector<UsbDrive> listDrives() {
 }
 
 #endif
-
-bool looksLikeGameDrive(const UsbDrive& d) {
-    return d.hasUlCfg;
-}
 
 } // namespace usbutils

@@ -5,19 +5,16 @@
 #include <cstring>
 #include "port.h"
 #include <algorithm>
-#include "port.h"
-#include <cstdlib>
 
 #if defined(_WIN32)
   #include <windows.h>
-  struct FindHandle { HANDLE h; };
 #else
   #include <dirent.h>
 #endif
 
 namespace usbutils {
 
-static std::string joinPath(const std::string& dir, const std::string& file) {
+std::string joinPath(const std::string& dir, const std::string& file) {
     if (dir.empty()) return file;
     if (dir.back() == '/' || dir.back() == '\\') return dir + file;
     return dir + "/" + file;
@@ -128,35 +125,6 @@ bool renameChunks(const std::string& dir, const std::string& oldIdHex,
         if (std::rename(from.c_str(), to.c_str()) != 0) return false;
     }
     return true;
-}
-
-bool copyFile(const std::string& src, const std::string& dst,
-              const ProgressFn& progress,
-              const std::function<bool()>& cancelled) {
-    FILE* in = std::fopen(src.c_str(), "rb");
-    if (!in) return false;
-    FILE* out = std::fopen(dst.c_str(), "wb");
-    if (!out) { std::fclose(in); return false; }
-
-    const uint64_t total = fileSizeOf(src);
-    uint64_t done = 0;
-
-    // 8 MiB buffer like the original's global @0x3C3290 (0x800020 bytes).
-    std::vector<uint8_t> buf(8 * 1024 * 1024);
-    bool ok = true;
-    while (ok) {
-        if (cancelled && cancelled()) { ok = false; break; }
-        const size_t n = std::fread(buf.data(), 1, buf.size(), in);
-        if (n == 0) break;
-        if (std::fwrite(buf.data(), 1, n, out) != n) { ok = false; break; }
-        done += n;
-        if (progress) progress(done, total);
-        if (n < buf.size()) break;
-    }
-    std::fclose(in);
-    std::fclose(out);
-    if (!ok) std::remove(dst.c_str());
-    return ok;
 }
 
 StructureReport checkStructure(const std::string& dir, const std::string& idHex,

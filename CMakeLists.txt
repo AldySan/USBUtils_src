@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(USBUtils VERSION 1.0.0 LANGUAGES CXX)
+project(USBUtils VERSION 0.0.1 LANGUAGES CXX)
 
 option(USBUTILS_BUILD_GUI "Build the Qt Widgets GUI" ON)
 option(USBUTILS_BUILD_TESTS "Build unit tests" ON)
@@ -19,14 +19,18 @@ add_library(usbutils_core STATIC
     src/core/ulcfg.cpp
     src/core/ulid.cpp
     src/core/gamefile.cpp
+    src/core/gamestream.cpp
     src/core/iso9660.cpp
     src/core/installer.cpp
     src/core/dnas.cpp
     src/core/gamedb.cpp
     src/core/recovery.cpp
     src/core/usbdevice.cpp
+    src/core/videorip.cpp
 )
 target_include_directories(usbutils_core PUBLIC src/core)
+target_compile_definitions(usbutils_core PUBLIC
+    USBUTILS_VERSION="${PROJECT_VERSION}")
 if(WIN32)
     target_link_libraries(usbutils_core PUBLIC user32)
 endif()

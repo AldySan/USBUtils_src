@@ -15,6 +15,24 @@ static std::string trim(const std::string& s) {
     return s.substr(b, e - b);
 }
 
+/// Parse one ljs line: optional leading '*', game name, optional
+/// parenthesised compatibility note. Appends to `out`.
+static void parseLjsLine(std::string line, std::vector<GameDbEntry>& out) {
+    std::string s = trim(line);
+    if (s.empty()) return;
+
+    GameDbEntry e;
+    if (s[0] == '*') { e.starred = true; s = trim(s.substr(1)); }
+    // notes live in parentheses, e.g. "187 Ride or Die (cambia CDVDSTM.IRX + PS2LOAD)"
+    const size_t op = s.rfind('(');
+    if (op != std::string::npos && !s.empty() && s.back() == ')') {
+        e.notes = s.substr(op + 1, s.size() - op - 2);
+        s = trim(s.substr(0, op));
+    }
+    e.name = s;
+    if (!e.name.empty()) out.push_back(std::move(e));
+}
+
 std::vector<GameDbEntry> loadGameDb(const std::string& ljsPath) {
     std::vector<GameDbEntry> out;
     FILE* f = std::fopen(ljsPath.c_str(), "rb");
@@ -24,31 +42,13 @@ std::vector<GameDbEntry> loadGameDb(const std::string& ljsPath) {
     int c;
     while ((c = std::fgetc(f)) != EOF) {
         if (c == '\n') {
-            if (!line.empty()) {
-                GameDbEntry e;
-                std::string s = trim(line);
-                if (!s.empty() && s[0] == '*') { e.starred = true; s = trim(s.substr(1)); }
-                // notes live in parentheses, e.g. "187 Ride or Die (cambia CDVDSTM.IRX + PS2LOAD)"
-                const size_t op = s.rfind('(');
-                if (op != std::string::npos && s.back() == ')') {
-                    e.notes = s.substr(op + 1, s.size() - op - 2);
-                    s = trim(s.substr(0, op));
-                }
-                e.name = s;
-                if (!e.name.empty()) out.push_back(std::move(e));
-            }
+            parseLjsLine(line, out);
             line.clear();
         } else {
             line += static_cast<char>(c);
         }
     }
-    if (!line.empty()) { // last line without newline
-        GameDbEntry e;
-        std::string s = trim(line);
-        if (!s.empty() && s[0] == '*') { e.starred = true; s = trim(s.substr(1)); }
-        e.name = s;
-        if (!e.name.empty()) out.push_back(std::move(e));
-    }
+    parseLjsLine(line, out);              // last line without trailing newline
     std::fclose(f);
     return out;
 }
@@ -114,7 +114,9 @@ bool saveRecoveryDb(const std::string& rcnPath,
     if (!f) return false;
     bool ok = true;
     for (size_t i = 0; i < games.size() && ok; ++i) {
-        const std::string s = games[i].serial + games[i].name;
+        std::string s = games[i].serial + games[i].name;
+        // one rcn record: len byte + payload; cap at 255 total
+        if (s.size() > 254) s.resize(254);
         const uint8_t len = static_cast<uint8_t>(s.size() + 1);
         const uint8_t key = static_cast<uint8_t>(len ^ i);
         if (std::fputc(len, f) == EOF) { ok = false; break; }

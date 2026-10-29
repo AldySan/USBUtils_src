@@ -40,12 +40,6 @@ bool UlCfgRecord::valid() const {
 
 // ---------------------------------------------------------------------------
 
-static std::string joinPath(const std::string& dir, const std::string& file) {
-    if (dir.empty()) return file;
-    if (dir.back() == '/' || dir.back() == '\\') return dir + file;
-    return dir + "/" + file;
-}
-
 bool UlCfg::load(const std::string& dir) {
     this->dir = dir;
     records.clear();

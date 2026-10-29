@@ -12,6 +12,7 @@
 #include "gamefile.h"
 
 #include <string>
+#include <vector>
 #include <functional>
 
 namespace usbutils {

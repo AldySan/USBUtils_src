@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
 #include "iso9660.h"
+#include "port.h"
 
 #include <cstdio>
 #include <cstring>
+#include <algorithm>
 
 namespace usbutils {
 
@@ -30,19 +32,108 @@ struct FileHandle {
     ~FileHandle() { if (f) std::fclose(f); }
 };
 
-bool readAt(FILE* f, uint64_t off, void* dst, size_t n) {
-    return std::fseek(f, static_cast<long>(off), SEEK_SET) == 0
-        && std::fread(dst, 1, n, f) == n;
+/// Directory extent to visit, with its accumulated path prefix.
+struct DirVisit {
+    uint32_t    lba;
+    uint64_t    size;
+    std::string path;           ///< "" for root, "MOVIES" for a subdir
+};
+
+/// Safety caps: a corrupt/hostile image must not hang or OOM the walker.
+constexpr uint64_t kMaxDirBytes  = 8ull * 1024 * 1024;   // 8 MiB per directory
+constexpr size_t   kMaxDirs      = 4096;
+
+std::string toLower(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s)
+        out += static_cast<char>((c >= 'A' && c <= 'Z') ? c + 32 : c);
+    return out;
+}
+
+/// Strip the ISO9660 version suffix (";1") and any trailing pad byte.
+std::string cleanIsoName(const uint8_t* rec, size_t recOff) {
+    const IsoDirEntry* e = reinterpret_cast<const IsoDirEntry*>(rec + recOff);
+    std::string name(reinterpret_cast<const char*>(rec + recOff + 33), e->nameLen);
+    if (!name.empty() && name.back() == '\0') name.pop_back();   // pad byte
+    const size_t semi = name.find(';');
+    if (semi != std::string::npos) name.resize(semi);
+    return name;
 }
 
 } // namespace
 
-bool readSector(const std::string& path, uint32_t lba, uint8_t* out2048) {
-    FileHandle fh;
-    fh.f = std::fopen(path.c_str(), "rb");
-    if (!fh.f) return false;
-    return readAt(fh.f, static_cast<uint64_t>(lba) * kSectorSize, out2048, kSectorSize);
+// ---------------------------------------------------------------------------
+// walkIso
+// ---------------------------------------------------------------------------
+
+bool walkIso(const IsoReadFn& read,
+             const std::function<bool(const IsoEntry&)>& onEntry) {
+    uint8_t pvd[kSectorSize];
+    if (!read(16ull * kSectorSize, pvd, sizeof(pvd))) return false;
+    if (std::memcmp(pvd + 1, "CD001", 5) != 0) return false;   // not ISO9660
+
+    const IsoDirEntry* root =
+        reinterpret_cast<const IsoDirEntry*>(pvd + 156);
+
+    std::vector<DirVisit> stack;
+    std::vector<uint32_t> visited;                 // cycle guard (corrupt images)
+    stack.push_back({root->lbaLE, root->sizeLE, ""});
+
+    while (!stack.empty()) {
+        const DirVisit cur = stack.back();
+        stack.pop_back();
+
+        if (visited.size() >= kMaxDirs) return true;   // pathological — stop safely
+        visited.push_back(cur.lba);
+
+        uint64_t dirLen = cur.size;
+        if (dirLen == 0 || dirLen > kMaxDirBytes) dirLen = kMaxDirBytes;
+        std::vector<uint8_t> dir(static_cast<size_t>(dirLen));
+        if (!read(static_cast<uint64_t>(cur.lba) * kSectorSize, dir.data(), dir.size()))
+            continue;                               // unreadable dir — skip subtree
+
+        for (size_t off = 0; off + 1 < dir.size();) {
+            const uint8_t recLen = dir[off];
+            if (recLen == 0) {                      // pad to sector boundary
+                off = (off / kSectorSize + 1) * kSectorSize;
+                continue;
+            }
+            if (off + recLen > dir.size()) break;   // truncated record
+            const IsoDirEntry* e =
+                reinterpret_cast<const IsoDirEntry*>(dir.data() + off);
+            const size_t recOff = off;              // (used by cleanIsoName)
+            off += recLen;
+
+            const std::string name = cleanIsoName(dir.data(), recOff);
+
+            // "." and ".." — identifier byte is 0x00 / 0x01
+            if (name.empty() ||
+                (e->nameLen == 1 && dir[recOff + 33] < 2))
+                continue;
+
+            IsoEntry en;
+            en.name  = name;
+            en.path  = cur.path.empty() ? name : cur.path + "\\" + name;
+            en.lba   = e->lbaLE;
+            en.size  = e->sizeLE;
+            en.isDir = (e->flags & 0x02) != 0;
+
+            if (en.isDir) {
+                bool seen = false;                  // self-referencing dir guard
+                for (uint32_t v : visited) if (v == en.lba) { seen = true; break; }
+                if (!seen && en.lba != cur.lba)
+                    stack.push_back({en.lba, en.size, en.path});
+            }
+            if (!onEntry(en)) return true;          // caller requested early stop
+        }
+    }
+    return true;
 }
+
+// ---------------------------------------------------------------------------
+// readIsoInfo
+// ---------------------------------------------------------------------------
 
 std::string normalizeSerial(const std::string& raw) {
     std::string s = raw;
@@ -59,6 +150,39 @@ std::string normalizeSerial(const std::string& raw) {
     return s;
 }
 
+namespace {
+
+/// Extract the boot ELF file name from a SYSTEM.CNF "BOOT2 = ..." line.
+/// Handles both "cdrom0:\SLUS_202.65;1" and bare "SLUS_202.65" forms.
+std::string bootElfFromCnf(const std::string& cnf) {
+    const size_t b = cnf.find("BOOT2");
+    if (b == std::string::npos) return {};
+    const size_t eq = cnf.find('=', b);
+    if (eq == std::string::npos) return {};
+
+    // value runs to end of line
+    size_t end = eq + 1;
+    while (end < cnf.size() && cnf[end] != '\r' && cnf[end] != '\n') ++end;
+    std::string val = cnf.substr(eq + 1, end - eq - 1);
+
+    // trim blanks, strip ";N" version suffix
+    size_t s = 0, t = val.size();
+    while (s < t && (val[s] == ' ' || val[s] == '\t')) ++s;
+    while (t > s && (val[t-1] == ' ' || val[t-1] == '\t' || val[t-1] == ';'))
+        --t;
+    val = val.substr(s, t - s);
+
+    // basename: after the last '\' or ':'
+    size_t cut = val.rfind('\\');
+    const size_t colon = val.rfind(':');
+    if (colon != std::string::npos && (cut == std::string::npos || colon > cut))
+        cut = colon;
+    if (cut != std::string::npos) val = val.substr(cut + 1);
+    return val;
+}
+
+} // namespace
+
 IsoInfo readIsoInfo(const std::string& path) {
     IsoInfo info;
     FileHandle fh;
@@ -67,85 +191,49 @@ IsoInfo readIsoInfo(const std::string& path) {
 
     // ---- Primary Volume Descriptor (sector 16) --------------------------
     uint8_t pvd[kSectorSize];
-    if (!readAt(fh.f, 16ull * kSectorSize, pvd, kSectorSize)) return info;
+    if (!usbutils::seek64(fh.f, 16ll * kSectorSize) ||
+        std::fread(pvd, 1, kSectorSize, fh.f) != kSectorSize)
+        return info;
     if (std::memcmp(pvd + 1, "CD001", 5) != 0) return info;   // not ISO9660
 
     info.volumeSize = static_cast<uint32_t>(pvd[80] | (pvd[81] << 8) |
                        (pvd[82] << 16) | (pvd[83] << 24));
     info.volumeId.assign(reinterpret_cast<char*>(pvd + 40), 32);
-    while (!info.volumeId.empty() && info.volumeId.back() == ' ')
+    while (!info.volumeId.empty() &&
+           (info.volumeId.back() == ' ' || info.volumeId.back() == '\0'))
         info.volumeId.pop_back();
 
-    // ---- Root directory record (PVD offset 156) -------------------------
-    const IsoDirEntry* root =
-        reinterpret_cast<const IsoDirEntry*>(pvd + 156);
-    const uint32_t rootLba = root->lbaLE;
-
-    // ---- Walk root directory records looking for SYSTEM.CNF -------------
-    // The original located it via the ISO directory (LBA*2048, size<=255)
-    // then read the file — see ParseSystemCnf @0x3A0F10.
-    uint8_t dir[kSectorSize * 4];
-    uint32_t dirLen = root->sizeLE;
-    if (dirLen > sizeof(dir)) dirLen = sizeof(dir);
-    if (!readAt(fh.f, static_cast<uint64_t>(rootLba) * kSectorSize, dir, dirLen))
-        return info;
-
+    // ---- Walk the directory tree looking for SYSTEM.CNF -----------------
+    // (the original only inspected the root; real PS2 discs always keep it
+    // there, but accepting any depth is strictly more forgiving)
     uint32_t sysLba = 0;
-    uint32_t sysSize = 0;
-    for (uint32_t off = 0; off + 1 < dirLen;) {
-        const uint8_t recLen = dir[off];
-        if (recLen == 0) {                          // pad to sector boundary
-            off = (off / kSectorSize + 1) * kSectorSize;
-            if (off >= dirLen) break;
-            continue;
+    uint64_t sysSize = 0;
+    FILE* file = fh.f;                                 // captured by the read fn
+    const IsoReadFn read = [file](uint64_t off, void* dst, size_t n) {
+        return usbutils::seek64(file, static_cast<int64_t>(off))
+            && std::fread(dst, 1, n, file) == n;
+    };
+    walkIso(read, [&](const IsoEntry& e) {
+        if (!e.isDir && toLower(e.name) == "system.cnf") {
+            sysLba = e.lba;
+            sysSize = e.size;
+            return false;                              // found — stop the walk
         }
-        const IsoDirEntry* e = reinterpret_cast<const IsoDirEntry*>(dir + off);
-        // Directory names carry the ISO9660 version suffix ("SYSTEM.CNF;1");
-        // strip it (and the trailing pad byte) before matching.
-        std::string name(reinterpret_cast<const char*>(dir + off + 33), e->nameLen);
-        if (name.size() > 0 && name.back() == '\0') name.pop_back();   // pad byte
-        const size_t semi = name.find(';');
-        if (semi != std::string::npos) name = name.substr(0, semi);
-        // Compare case-insensitively ("system.cnf" ref @0xA5430)
-        std::string lower;
-        for (char c : name) lower += static_cast<char>(
-            (c >= 'A' && c <= 'Z') ? c + 32 : c);
-        if (lower == "system.cnf") {
-            sysLba = e->lbaLE;
-            sysSize = e->sizeLE;
-            break;
-        }
-        off += recLen;
-    }
+        return true;
+    });
 
-    if (sysLba == 0) return info;                   // "not a PS2 disc"
+    if (sysLba == 0) return info;                      // "not a PS2 disc"
 
     // ---- Read SYSTEM.CNF (capped at 255 like the original) --------------
     if (sysSize > 255) sysSize = 255;
-    std::string cnf(sysSize, '\0');
-    if (!readAt(fh.f, static_cast<uint64_t>(sysLba) * kSectorSize, &cnf[0], sysSize))
+    std::string cnf(static_cast<size_t>(sysSize), '\0');
+    if (sysSize == 0 ||
+        !read(static_cast<uint64_t>(sysLba) * kSectorSize, &cnf[0], cnf.size()))
         return info;
     info.systemCnf = cnf;
 
-    // ---- BOOT2 line ------------------------------------------------------
-    // Typical: BOOT2 = cdrom0:\SLUS_202.65;1
-    std::string elf;
-    const size_t b = cnf.find("BOOT2");
-    if (b != std::string::npos) {
-        size_t eq = cnf.find('=', b);
-        if (eq != std::string::npos) {
-            size_t start = cnf.find('\\', eq);       // path separator scan
-            if (start == std::string::npos) start = eq + 1;
-            size_t end = start + 1;
-            while (end < cnf.size() && cnf[end] != '\r' && cnf[end] != '\n'
-                   && cnf[end] != ' ' && cnf[end] != ';')
-                ++end;
-            elf = cnf.substr(start + 1 < cnf.size() ? start + 1 : start,
-                             end - (start + 1 < cnf.size() ? start + 1 : start));
-        }
-    }
-    info.bootElf = elf;
-    info.serial = normalizeSerial(elf);
+    info.bootElf = bootElfFromCnf(cnf);
+    info.serial = normalizeSerial(info.bootElf);
     info.valid = !info.serial.empty();
     return info;
 }

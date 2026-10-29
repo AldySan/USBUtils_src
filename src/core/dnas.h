@@ -50,10 +50,12 @@ private:
                    uint64_t& off, uint32_t& size) const;
 };
 
-/// Locate the embedded IOPRP image inside a game's chunk stream.
-/// Writes chunk index, in-chunk offset and length. Returns false if absent.
-bool locateEmbeddedIoprp(const std::string& dir, const std::string& idHex,
-                         const std::string& serial, uint32_t parts,
-                         uint32_t& chunkIdx, uint64_t& offset, uint32_t& length);
+/// Locate the IOPRP image inside a game's chunk stream. Prefers the exact
+/// "IOPRP*.IMG" ISO directory entry (precise LBA + size); falls back to a
+/// bounded "RESET\0\0\0" magic scan for non-standard images. Writes the
+/// stream-absolute byte offset and the slot length. Returns false if absent.
+bool locateIoprp(const std::string& dir, const std::string& idHex,
+                 const std::string& serial, uint32_t parts,
+                 uint64_t& offset, uint32_t& length);
 
 } // namespace usbutils

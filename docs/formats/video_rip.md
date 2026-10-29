@@ -2,41 +2,84 @@
 
 ## In-game video handling ("Videos activate/deactivate/coincide")
 
-PS2 DVD games store video as `.PSS` (MPEG-2 program streams) and `.PSS`-like
-`.PAK`/`.DAT` files. USBUtil's ripper:
+PS2 DVD games store video as `.PSS` (MPEG-2 program streams) and
+`.PSS`-like multi-part containers (`MOVIE.PSS.01`, detected by the
+original's `.PSS.` constant). USBUtil's ripper:
 
-* **Deactivate** — replaces video file content with a tiny stub
-  (scan-and-blank), preserving file size and therefore LBA offsets.
-* **Activate** — restores from the original ISO.
+* **Deactivate** — blanks the video file's bytes, preserving file size and
+  therefore LBA offsets (the USBExtreme loader expects a byte-exact ISO
+  image, so sizes must not change).
+* **Activate** — restores the original bytes.
 * **Coincide** — only blanks videos that match a name/size list.
 
 Detection string refs: `'.PSS'`, `'.PSS.'` constants in the CODE pool and
 `No existen formatos de video reconocidos por esta versión.` ("no
 recognized video formats") @0x940B8.
 
-This reimplementation (`core/videorip.cpp`) performs size-preserving
-blanking of `.PSS`/`.PSS`-detected streams inside chunk files with an
-undo sidecar (`.usbutils-rip` storing original byte ranges), which is a
-safer, reversible equivalent of the original's destructive rip.
+### This reimplementation (`core/videorip.cpp`)
+
+* **Scan** — walks the game's ISO9660 directory tree through
+  `GameStream` (`core/gamestream.cpp`, random access over the
+  `ul.<ID>.<SERIAL>.NN` chunks) and lists every `.PSS`-named file with
+  its exact LBA-derived offset and size.
+* **Rip (turn off)** — size-preserving zeroing of the selected ranges.
+  Before any byte is touched, the originals are streamed into a sidecar
+  backup (the original's destructive rip is available in the CLI via
+  `--no-backup`).
+* **Restore (turn on)** — writes the backed-up ranges back and removes
+  the sidecar. Games export bit-identical to the source ISO afterwards.
+
+### Sidecar backup format — `ul.<ID>.<SERIAL>.00.rip`
+
+Little-endian, `#pragma pack(1)`:
+
+| Offset | Size | Field |
+|--------|------|-------|
+| 0 | 8 | magic `"USRRIP01"` |
+| 8 | 4 | uint32 entry count |
+| 12 | 16×N | entries: `{ uint64 streamOffset, uint64 size }` |
+| 12+16N | … | original bytes of each entry, in entry order |
+
+Ripping more videos later appends entries; previously backed-up data is
+copied verbatim (the game stream already holds zeros for it — re-reading
+it would destroy the backup). An incremental destructive rip never
+damages an existing backup.
+
+### CLI
+
+```
+usbutils videos <index>  -d <dir>                 # list + state
+usbutils rip <index>     -d <dir> [--all | --only path,...] [--no-backup]
+usbutils unrip <index>   -d <dir>                 # restore all + drop backup
+```
+
+### GUI
+
+`Videos...` opens a per-game dialog (table, sizes, current state) with
+"Turn OFF selected videos" / "Turn all videos back ON" — both run on a
+worker thread behind a cancelable progress dialog. The GUI always makes
+a backup.
 
 ## PS2LOAD.ELF injection
 
-`PS2LOAD.ELF` (218,252 bytes, MIPS ELF, shipped with the tool) is the
-boot loader used to build bootable media. The original writes it into the
-ISO9660/MicroUDF image it constructs via its burning stack. The injection
-point selected in the UI ("PS2Load options") determines whether the ELF
-replaces the game's primary volume descriptor boot record or is added as
-`PS2LOAD.ELF;1` in the root directory.
+`PS2LOAD.ELF` (218,252 bytes, MIPS ELF, shipped in `data/`) is the boot
+loader used to build bootable media. The original writes it into the
+ISO9660/MicroUDF image it constructs via its burning stack. The
+injection point selected in the UI ("PS2Load options") determines whether
+the ELF replaces the game's primary volume descriptor boot record or is
+added as `PS2LOAD.ELF;1` in the root directory.
 
-This repo re-implements the second form (add file) on the ISO level via
-`core/ps2load.cpp` (rebuilds the ISO directory with the extra file,
-adjusting LBA allocation) and keeps the original ELF in `data/`.
+Not implemented in this reimplementation yet (the burning stack is out
+of scope — see README); the original ELF is kept in `data/` for the
+future ISO-level injector.
 
 ## IOPRP images (SCEE_DD)
 
 `IOPRP16.IMG` … `IOPRP202.IMG` shipped in `SCEE_DD/` are Sony IOP ROM
 replacement images; see `formats/dnas_package.md`. All begin with the
-ASCII magic `RESET`.
+ASCII magic `RESET`. DNAS patching locates the game's `IOPRP*.IMG` ISO
+directory entry for the exact extent — never a blind magic scan — and
+falls back to a bounded `RESET\0\0\0` scan only for non-standard rips.
 
 ## usbutil.aso — tool config
 
@@ -49,4 +92,5 @@ OTRO=; param=; del=0
 ```
 
 Key/value INI-like text file; `del=1` marks entries removable. The
-reimplementation uses `usbutils.ini` with the same semantics.
+reimplementation uses Qt `QSettings` (organization `AldySan`, app
+`USBUtils`) with the same semantics.

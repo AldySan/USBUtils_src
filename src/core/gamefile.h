@@ -20,6 +20,10 @@ constexpr uint64_t kCdThreshold = 734003200ull;
 /// CD / DVD media codes written into ul.cfg byte 48.
 enum Media : uint8_t { kMediaCd = 0x12, kMediaDvd = 0x14 };
 
+/// Join a directory and a file name ('/' separator; tolerant of a
+/// trailing '/' or '\\'). Shared by all chunk-file accessors.
+std::string joinPath(const std::string& dir, const std::string& file);
+
 /// Number of chunks for a given total size (ceil division, 0x3A11C2).
 uint32_t chunkCount(uint64_t totalSize);
 
@@ -52,12 +56,9 @@ bool renameChunks(const std::string& dir, const std::string& oldIdHex,
                   const std::string& newIdHex, const std::string& serial,
                   uint32_t parts);
 
-/// Copy one chunk file (8 MiB buffered, progress + cancel)
-/// — mirrors WriteChunkFile @0x39CF44.
+/// Progress callback: (bytes done, bytes total). Shared by every
+/// long-running engine operation.
 using ProgressFn = std::function<void(uint64_t done, uint64_t total)>;
-bool copyFile(const std::string& src, const std::string& dst,
-              const ProgressFn& progress = nullptr,
-              const std::function<bool()>& cancelled = nullptr);
 
 /// Structure check: verify all parts exist and sum sizes.
 struct StructureReport {
