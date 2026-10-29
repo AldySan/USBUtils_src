@@ -14,8 +14,12 @@ REPO=/home/z/my-project/USBUtils_src
 QT_HOST=/home/z/my-project/tools/qt6/usr
 QT_WIN=/home/z/my-project/tools/qt6-win/6.8.2/mingw_64
 MINGW=/home/z/my-project/tools/mingw-cross/usr/x86_64-w64-mingw32
+# objdump of the cross toolchain (not necessarily in PATH)
+OBJDUMP=$(command -v x86_64-w64-mingw32-objdump \
+          || echo /home/z/my-project/tools/mingw/usr/bin/x86_64-w64-mingw32-objdump)
 OUT=/home/z/my-project/download/releases
 WORK=/tmp/usbutils-relbuild
+mkdir -p "$OUT"
 
 VERSION=$(grep -oP 'project\(USBUtils VERSION \K[0-9.]+' "$REPO/CMakeLists.txt")
 echo "== USBUtils $VERSION =="
@@ -60,8 +64,31 @@ while [ ${#queue[@]} -gt 0 ]; do
 done
 [ "${#seen[@]}" -ge 10 ] || { echo "ERROR: Qt closure too small (${#seen[@]} libs)"; exit 1; }
 
-cp -L "$QT_HOST/lib/x86_64-linux-gnu/qt6/plugins/platforms/"*.so   "$LROOT/plugins/platforms/"
+# Bundle only the platform plugins usable by a desktop app: xcb (native
+# desktop), offscreen and minimal (fallbacks / CI).  eglfs, linuxfb,
+# minimalegl, vkkhrdisplay and vnc target embedded/kiosk setups and would
+# drag in touchscreen/egl/vnc deps (libinput, tslib, mtdev, libproxy) that
+# a desktop bundle should not have to carry.
+for p in libqxcb.so libqoffscreen.so libqminimal.so; do
+    cp -L "$QT_HOST/lib/x86_64-linux-gnu/qt6/plugins/platforms/$p" "$LROOT/plugins/platforms/"
+done
 cp -L "$QT_HOST/lib/x86_64-linux-gnu/qt6/plugins/imageformats/"*.so "$LROOT/plugins/imageformats/"
+
+# The bundle must be self-contained: every bundled library and plugin has
+# to resolve against the package itself plus the base system.  ldd resolves
+# bundled deps via LD_LIBRARY_PATH (still exported from the closure walk).
+missing=$(for f in "$LROOT"/lib/*.so* "$LROOT"/plugins/platforms/*.so \
+                    "$LROOT"/plugins/imageformats/*.so; do
+              ldd "$f" 2>/dev/null
+          done | grep 'not found' | sort -u || true)
+if [ -n "$missing" ]; then
+    echo "ERROR: bundled Qt closure has unresolved dependencies:"
+    echo "$missing"
+    echo "Install the missing libs into the build host (or Qt prefix) so the"
+    echo "closure can copy them, then re-run."
+    exit 1
+fi
+
 cp "$LGUI" "$LROOT/bin/usbutils-gui.bin"
 cp "$LCLI" "$LROOT/bin/usbutils.bin"
 
@@ -157,7 +184,7 @@ for exe in "$WGUI" "$WCLI"; do
         elif [ -z "$src" ]; then
             echo "  (system DLL, not bundled: $dll)"
         fi
-    done < <(x86_64-w64-mingw32-objdump -p "$exe" 2>/dev/null | awk '/DLL Name/{print $3}')
+    done < <("$OBJDUMP" -p "$exe" 2>/dev/null | awk '/DLL Name/{print $3}')
 done
 echo "Windows: bundled $copied DLLs"
 
