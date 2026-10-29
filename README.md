@@ -136,6 +136,8 @@ src/cli/         command-line tool
 src/gui/         Qt Widgets application
 tests/           core unit + end-to-end tests
 data/            game database and assets shipped with the original tool
+tools/           analysis toolkit (RE + minidump forensics + icon/ISO test helpers)
+scripts/         release packaging
 ```
 
 Key engine pieces: `src/core/gamestream.cpp` (random-access view over a

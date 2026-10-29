@@ -123,7 +123,17 @@ variant used for the game id (poly 0x04C11DB7, MSB-first, init 0, no final
 xor, input = `Trim(name) + #0`) is non-standard and was derived directly
 from the disassembly of `0x398738` / `0x398784`.
 
-## 8. What was NOT ported and why
+## 8. Analysis toolkit
+
+The scripts that produced this analysis are shipped in the repository under
+[`tools/`](../tools/README.md) — PE resource/DFM extraction, the binary
+DFM-to-text converter, Delphi string-reference finder, function-window
+extractor, the `usbutil.rcn` decoder, plus the minidump parsers used for the
+crash forensics in `crash-v0.0.3-startup.md` / `crash-v0.0.4-iso-explorer.md`
+and the hostile-ISO regression test. They run on a stock Python 3, so the
+whole derivation stays reproducible.
+
+## 9. What was NOT ported and why
 
 * **CD/DVD burning stack** (`SCSIUnit`, `SptiUnit`, `BurnUnit`,
   MicroUDF image builder): out of scope for a USB game manager; modern
