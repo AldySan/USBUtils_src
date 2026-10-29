@@ -42,6 +42,8 @@
 #include "../core/gamedb.h"
 #include "../core/usbdevice.h"
 #include "../core/update.h"
+#include "../core/isoedit.h"
+#include "../core/supportfiles.h"
 
 #ifndef USBUTILS_VERSION
 #define USBUTILS_VERSION "0.0.1"
@@ -52,6 +54,7 @@
 #include <cctype>
 #include <string>
 #include <vector>
+#include <map>
 #include <functional>
 #include <filesystem>
 
@@ -91,6 +94,11 @@ static void usage() {
         "                                                     files no game uses;\n"
         "                                                     --apply deletes them)\n"
         "  usbutils fix                  -d <dir> [--apply]   (correct code 666.66)\n"
+        "  usbutils iso info <image.iso>               (image summary)\n"
+        "  usbutils iso list <image.iso>               (file tree)\n"
+        "  usbutils iso extract <image.iso> --path <p> [-o out]\n"
+        "  usbutils support                            (check the shipped\n"
+        "                                              data files)\n"
         "  usbutils check-update                                (look for a newer release)\n"
         "  usbutils --version\n"
         "\n"
@@ -148,13 +156,16 @@ static Args parse(int argc, char** argv) {
         else if (a.cmd == "ps2load" && a.sub.empty()
                  && (s == "inject" || s == "remove" || s == "status"))
             a.sub = s;
+        else if (a.cmd == "iso" && a.sub.empty()
+                 && (s == "info" || s == "list" || s == "extract"))
+            a.sub = s;
         else if (s == "--all") a.all = true;
         else if (s == "--apply") a.apply = true;
         else if (s == "--no-backup") a.noBackup = true;
         else if (s == "all") a.all = true;
         else if (std::isdigit(static_cast<unsigned char>(s[0])) && s.find_first_not_of("0123456789") == std::string::npos)
             a.index = std::atoi(s.c_str());
-        else if (a.iso.empty() && a.cmd == "install") a.iso = s;
+        else if (a.iso.empty() && (a.cmd == "install" || a.cmd == "iso")) a.iso = s;
         else if (a.pattern.empty() && a.cmd == "find") a.pattern = s;
     }
     return a;
@@ -799,6 +810,148 @@ static int cmdCheckUpdate() {
     return 0;
 }
 
+// ---------------------------------------------------------------------------
+// iso — "Open ISO to [Explore/Modify]" (read-only view in the CLI; the GUI
+// has the full modify workflow)
+// ---------------------------------------------------------------------------
+static int cmdIso(const Args& a) {
+    if (a.iso.empty()) { usage(); return 2; }
+    const std::string& sub = a.sub.empty() ? "info" : a.sub;
+
+    IsoImageDoc doc;
+    if (!doc.open(a.iso)) {
+        std::printf("ERROR: %s is not an ISO9660 image\n", a.iso.c_str());
+        return 1;
+    }
+
+    if (sub == "info") {
+        const IsoInfo info = readIsoInfo(a.iso);
+        std::printf("image:        %s\n", a.iso.c_str());
+        std::printf("volume id:    %s\n", doc.volumeId().c_str());
+        std::printf("image size:   %s\n", humanSize(doc.originalSize()).c_str());
+        if (info.valid) {
+            std::printf("serial:       %s  (PS2 game)\n", info.serial.c_str());
+            std::printf("boot file:    %s\n", info.bootElf.c_str());
+        } else {
+            std::printf("serial:       (no SYSTEM.CNF - not a PS2 game)\n");
+        }
+        size_t files = 0, dirs = 0;
+        doc.forEachNode([&](const IsoNode* n, int) {
+            if (n == doc.root()) return;
+            if (n->isDir) ++dirs; else ++files;
+        });
+        std::printf("folders:      %zu\nfiles:        %zu\n", dirs, files);
+        return 0;
+    }
+
+    if (sub == "list") {
+        doc.forEachNode([&](const IsoNode* n, int depth) {
+            if (n == doc.root()) return;
+            for (int i = 0; i < depth - 1; ++i) std::printf("  ");
+            std::printf("%s%-14s %10s%s\n",
+                        n->isDir ? "[DIR] " : "      ",
+                        n->name.c_str(),
+                        n->isDir ? "" : humanSize(n->size()).c_str(),
+                        n->isExternal() ? "   (added)" : "");
+        });
+        return 0;
+    }
+
+    if (sub == "extract") {
+        if (a.path.empty()) {
+            std::printf("ERROR: pass --path <file-in-image> (see `usbutils iso list`)\n");
+            return 2;
+        }
+        // build node -> full-path map, then wildcard-match over it
+        std::map<const IsoNode*, std::string> paths;
+        std::function<void(const IsoNode*, const std::string&)> collect =
+            [&](const IsoNode* n, const std::string& prefix) {
+            for (const auto& c : n->children) {
+                const std::string p = prefix.empty()
+                    ? c->name : prefix + "\\" + c->name;
+                paths[c.get()] = p;
+                if (c->isDir) collect(c.get(), p);
+            }
+        };
+        collect(doc.root(), "");
+
+        std::vector<const IsoNode*> selection;
+        for (const auto& [n, p] : paths) {
+            if (n->isDir) continue;
+            if (matchPattern(n->name, a.path) || matchPattern(p, a.path))
+                selection.push_back(n);
+        }
+        if (selection.empty()) {
+            std::printf("ERROR: no file matching \"%s\"\n", a.path.c_str());
+            return 1;
+        }
+        const bool many = selection.size() > 1;
+        if (many && a.out.empty()) {
+            std::printf("ERROR: %zu files match; pass an output directory with -o\n",
+                        selection.size());
+            return 1;
+        }
+        std::error_code ec;
+        if (many) std::filesystem::create_directories(a.out, ec);
+        bool ok = true;
+        for (const IsoNode* n : selection) {
+            std::string outPath = a.out;
+            if (many) {
+                std::string name = n->name;
+                outPath = (outPath.back() == '/' || outPath.back() == '\\')
+                              ? outPath + name : outPath + "/" + name;
+            } else if (outPath.empty()) {
+                outPath = n->name;
+            } else {
+                // single match with -o: an existing directory means
+                // "put the file inside it"
+                std::error_code ec2;
+                if (std::filesystem::is_directory(outPath, ec2)) {
+                    outPath = (outPath.back() == '/' || outPath.back() == '\\')
+                                  ? outPath + n->name
+                                  : outPath + "/" + n->name;
+                }
+            }
+            std::printf("extracting %s ...\n", n->name.c_str());
+            if (!doc.extractTo(n, outPath)) {
+                std::printf("ERROR: extract failed for %s\n", n->name.c_str());
+                ok = false;
+            } else {
+                std::printf("  -> %s (%s)\n", outPath.c_str(),
+                            humanSize(n->size()).c_str());
+            }
+        }
+        return ok ? 0 : 1;
+    }
+
+    usage();
+    return 2;
+}
+
+// ---------------------------------------------------------------------------
+// support — "Useful acquired" from the command line
+// ---------------------------------------------------------------------------
+static int cmdSupport() {
+    const auto st = checkSupportFiles();
+    size_t found = 0;
+    std::printf("Support files (searched next to the program, in ./data and "
+                "$USBUTILS_DATA):\n\n");
+    for (const SupportStatus& s : st) {
+        if (s.found) ++found;
+        std::printf("  %-22s %-13s %s\n",
+                    s.file.fileName,
+                    s.found ? (s.verified ? "found (orig)" : "found") : "MISSING",
+                    s.found ? humanSize(s.size).c_str()
+                            : (s.file.required ? "required!" : "optional"));
+    }
+    std::printf("\n%zu/%zu present\n", found, st.size());
+    for (const SupportStatus& s : st) {
+        if (!s.found && s.file.required)
+            std::printf("  missing %s breaks: %s\n", s.file.fileName, s.file.feature);
+    }
+    return found == st.size() ? 0 : 1;
+}
+
 int main(int argc, char** argv) {
     const Args a = parse(argc, argv);
     if (a.cmd.empty()) { usage(); return 2; }
@@ -831,6 +984,8 @@ int main(int argc, char** argv) {
     if (a.cmd == "clean" || a.cmd == "restore-space")
         return cmdClean(a);
     if (a.cmd == "fix")     return cmdFix(a);
+    if (a.cmd == "iso")     return cmdIso(a);
+    if (a.cmd == "support") return cmdSupport();
     if (a.cmd == "check-update" || a.cmd == "update-check")
         return cmdCheckUpdate();
     if (a.cmd == "id") {

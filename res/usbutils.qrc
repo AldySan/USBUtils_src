@@ -1,0 +1,7 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+    <qresource prefix="/res">
+        <file>icons/usbutils_256.png</file>
+        <file>icons/usbutils_64.png</file>
+    </qresource>
+</RCC>

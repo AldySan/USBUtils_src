@@ -23,6 +23,11 @@ struct InstallOptions {
     std::string serialOverride;        ///< used when SYSTEM.CNF missing
     bool        forceMedia    = false;
     uint8_t     mediaOverride = kMediaDvd;
+    uint64_t    sourceSize = 0;        ///< 0 = stat the file. Set for raw
+                                       ///< devices (CD/DVD drives) where
+                                       ///  SEEK_END does not work — must be
+                                       ///  the exact ISO9660 data size (a
+                                       ///  multiple of 2048).
 };
 
 struct InstallResult {

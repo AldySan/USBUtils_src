@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: MIT
 #include "usbdevice.h"
+#include "iso9660.h"
+#include "port.h"
 
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <algorithm>
 
 #if defined(_WIN32)
   #include <windows.h>
@@ -139,5 +142,110 @@ std::vector<UsbDrive> listDrives() {
 }
 
 #endif
+
+// ---------------------------------------------------------------------------
+// listOpticalDrives — enumerate CD/DVD drives and probe for ISO9660 discs
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// (helper shared by listOpticalDrives and the public probe below)
+
+} // namespace
+
+/// Probe one raw device: open, read sector 16 (PVD), and walk the root
+/// directory for SYSTEM.CNF. All reads are 2048-aligned so raw Windows
+/// device handles work.
+bool probeOpticalDrive(const std::string& devicePath, OpticalDrive* out) {
+    FILE* f = std::fopen(devicePath.c_str(), "rb");
+    if (!f) return false;
+
+    const IsoReadFn read = [f](uint64_t off, void* dst, size_t n) {
+        return usbutils::seek64(f, static_cast<int64_t>(off))
+            && std::fread(dst, 1, n, f) == n;
+    };
+
+    std::string volId;
+    uint32_t volSectors = 0;
+    if (!usbutils::readPvd(read, &volId, &volSectors)) {
+        std::fclose(f);
+        out->discPresent = true;      // there IS a disc, just not ISO9660
+        return false;
+    }
+
+    out->volumeId = volId;
+    out->dataBytes = uint64_t(volSectors) * 2048ull;
+    out->discPresent = true;
+
+    // SYSTEM.CNF probe (serial). All walk reads stay 2048-multiples because
+    // directory extents are sector-padded on real discs.
+    walkIso(read, [&](const IsoEntry& e) {
+        if (!e.isDir) {
+            std::string low;
+            for (char c : e.name) low += char((c >= 'A' && c <= 'Z') ? c + 32 : c);
+            if (low == "system.cnf") {
+                char cnf[256] = {};
+                const size_t n = e.size < 255 ? size_t(e.size) : 255;
+                if (read(uint64_t(e.lba) * 2048ull, cnf, n)) {
+                    out->isPs2 = true;
+                    out->serial = usbutils::normalizeSerial(
+                        usbutils::bootElfFromCnf(std::string(cnf, n)));
+                }
+                return false;
+            }
+        }
+        return true;
+    });
+
+    std::fclose(f);
+    return true;
+}
+
+std::vector<OpticalDrive> listOpticalDrives() {
+    std::vector<OpticalDrive> out;
+
+#if defined(_WIN32)
+    const DWORD mask = GetLogicalDrives();
+    for (int i = 0; i < 26; ++i) {
+        if (!(mask & (1u << i))) continue;
+        std::string root;
+        root += static_cast<char>('A' + i);
+        root += ":\\";
+        if (GetDriveTypeA(root.c_str()) != DRIVE_CDROM) continue;
+
+        OpticalDrive od;
+        od.devicePath = std::string("\\\\.\\") + root.substr(0, 2);
+        od.display = "CD/DVD drive " + root.substr(0, 2);
+        if (probeOpticalDrive(od.devicePath, &od) && !od.volumeId.empty())
+            od.display += " — " + od.volumeId;
+        out.push_back(std::move(od));
+    }
+#else
+    // /dev/sr0..sr31 plus the classic symlinks
+    std::vector<std::string> paths;
+    for (int i = 0; i < 32; ++i) {
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "/dev/sr%d", i);
+        paths.push_back(buf);
+    }
+    for (const char* link : {"/dev/cdrom", "/dev/dvd", "/dev/cdrom0"}) {
+        if (std::find(paths.begin(), paths.end(), link) == paths.end())
+            paths.push_back(link);
+    }
+    for (const std::string& p : paths) {
+        FILE* f = std::fopen(p.c_str(), "rb");
+        if (!f) continue;
+        std::fclose(f);                     // exists & openable
+
+        OpticalDrive od;
+        od.devicePath = p;
+        od.display = p;
+        if (probeOpticalDrive(p, &od) && !od.volumeId.empty())
+            od.display += " — " + od.volumeId;
+        out.push_back(std::move(od));
+    }
+#endif
+    return out;
+}
 
 } // namespace usbutils

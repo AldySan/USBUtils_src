@@ -25,6 +25,28 @@ struct UsbDrive {
 /// /run/media/$USER and /Volumes.
 std::vector<UsbDrive> listDrives();
 
+/// An optical (CD/DVD) drive with a data disc inserted — the source for
+/// "Create GAME from CD/DVD".
+struct OpticalDrive {
+    std::string devicePath;   ///< raw device ("/dev/sr0" or "\\\\.\\D:")
+    std::string display;      ///< friendly name ("DVD Drive (D:)", "/dev/sr0")
+    std::string volumeId;     ///< ISO9660 volume id (empty until probed)
+    uint64_t    dataBytes = 0;///< exact ISO9660 data size (volumeSectors*2048)
+    bool        discPresent = false;
+    bool        isPs2 = false;     ///< SYSTEM.CNF found (heuristic probe)
+    std::string serial;      ///< e.g. "SLUS_202.65" when isPs2
+};
+
+/// Enumerate optical drives and probe each for an ISO9660 disc.
+/// Probing opens the raw device and reads sector 16 (PVD) — drives with
+/// no disc are listed with discPresent = false.
+std::vector<OpticalDrive> listOpticalDrives();
+
+/// Probe one raw device path ("/dev/sr0", "\\\\.\\D:") for an ISO9660
+/// data disc. Returns false when the device cannot be opened; check
+/// `out->discPresent` for medium presence.
+bool probeOpticalDrive(const std::string& devicePath, OpticalDrive* out);
+
 /// True when the drive root contains ul.cfg (already a game drive).
 bool probeUlCfg(const std::string& root);
 

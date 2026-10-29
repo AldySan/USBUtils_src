@@ -27,6 +27,8 @@
 #include "ps2load.h"
 #include "gameops.h"
 #include "update.h"
+#include "isoedit.h"
+#include "supportfiles.h"
 #include "port.h"
 
 #include <cstdio>
@@ -910,6 +912,166 @@ static void testSortAndClean() {
     fs::remove_all(base);
 }
 
+// ---------------------------------------------------------------------------
+// IsoImageDoc — "Open ISO to [Explore/Modify]": open, modify, save, reopen
+// ---------------------------------------------------------------------------
+static void testIsoEdit() {
+    namespace fs = std::filesystem;
+    const fs::path base = fs::temp_directory_path() / "usbutils_isoedit";
+    fs::create_directories(base);
+    const fs::path src = base / "src.iso";
+    writeTestIso(src, "SLUS_202.65", 2048 * 2);
+
+    IsoImageDoc doc;
+    CHECK(doc.open(src.string()));
+    CHECK(doc.volumeId() == "TEST_VOLUME");
+    CHECK(doc.root() && doc.root()->isDir);
+    // root children: SYSTEM.CNF, MOVIES, IOPRP300.IMG
+    CHECK(doc.root()->children.size() == 3);
+    CHECK(!doc.dirty());
+
+    // ---- explore: extract SYSTEM.CNF and verify ---------------------------
+    const IsoNode* cnf = nullptr;
+    const IsoNode* movies = nullptr;
+    for (const auto& c : doc.root()->children) {
+        if (c->name == "SYSTEM.CNF") cnf = c.get();
+        if (c->name == "MOVIES")     movies = c.get();
+    }
+    CHECK(cnf && movies);
+    CHECK(cnf->size() == 96);
+    CHECK(movies->children.size() == 1);            // INTRO.PSS
+    CHECK(movies->children[0]->size() == 3 * 2048);
+
+    const fs::path extracted = base / "system.cnf";
+    CHECK(doc.extractTo(cnf, extracted.string()));
+    {
+        FILE* f = std::fopen(extracted.string().c_str(), "rb");
+        CHECK(f);
+        if (f) {
+            char buf[97] = {};
+            std::fread(buf, 1, 96, f);
+            std::fclose(f);
+            CHECK(std::strstr(buf, "BOOT2") != nullptr);
+            CHECK(std::strstr(buf, "SLUS_202.65") != nullptr);
+        }
+    }
+
+    // ---- modify: add a directory + a file, delete IOPRP -------------------
+    IsoNode* newDir = doc.addDir(doc.root(), "MODS");
+    CHECK(newDir);
+    const fs::path payload = base / "payload.bin";
+    {
+        std::vector<uint8_t> data(5000);
+        for (size_t i = 0; i < data.size(); ++i) data[i] = uint8_t(i * 7);
+        FILE* f = std::fopen(payload.string().c_str(), "wb");
+        std::fwrite(data.data(), 1, data.size(), f);
+        std::fclose(f);
+    }
+    IsoNode* added = doc.addFile(newDir, payload.string(), "DUMMY.BIN");
+    CHECK(added);
+    CHECK(added->isoName == "DUMMY.BIN;1");
+    CHECK(added->size() == 5000);
+    CHECK(doc.dirty());
+
+    IsoNode* ioprp = nullptr;
+    for (const auto& c : doc.root()->children)
+        if (c->name == "IOPRP300.IMG") ioprp = c.get();
+    CHECK(ioprp);
+    CHECK(doc.removeChild(doc.root(), ioprp));
+
+    // rename SYSTEM.CNF -> SYSTEM.CNF (identity through sanitiser)
+    CHECK(doc.renameNode(added, "dummy.bin"));
+    CHECK(added->isoName == "DUMMY.BIN;1");          // uppercased
+
+    // ---- save + reopen ------------------------------------------------------
+    const fs::path out = base / "mod.iso";
+    std::string err;
+    CHECK(doc.saveAs(out.string(), nullptr, &err));
+    if (!std::filesystem::exists(out)) CHECK(false);
+
+    // reopen with the plain reader: serial + new structure must be intact
+    IsoInfo info = readIsoInfo(out.string());
+    CHECK(info.valid);
+    CHECK(info.serial == "SLUS_202.65");
+
+    std::map<std::string, uint64_t> entries;
+    {
+        FILE* wf = std::fopen(out.string().c_str(), "rb");
+        CHECK(wf != nullptr);
+        if (wf) {
+            const IsoReadFn read = [wf](uint64_t off, void* dst, size_t n) {
+                return usbutils::seek64(wf, static_cast<int64_t>(off))
+                    && std::fread(dst, 1, n, wf) == n;
+            };
+            const bool walked = walkIso(read, [&](const IsoEntry& e) {
+                entries[e.path] = e.size;
+                return true;
+            });
+            CHECK(walked);
+            std::fclose(wf);
+        }
+    }
+    CHECK(entries.count("SYSTEM.CNF") == 1);
+    CHECK(entries.count("MOVIES\\INTRO.PSS") == 1);
+    CHECK(entries["MOVIES\\INTRO.PSS"] == 3 * 2048);
+    CHECK(entries.count("MODS\\DUMMY.BIN") == 1);
+    CHECK(entries["MODS\\DUMMY.BIN"] == 5000);
+    CHECK(entries.count("IOPRP300.IMG") == 0);       // deleted
+
+    // file content survived the rewrite (extract through a fresh doc)
+    IsoImageDoc doc2;
+    CHECK(doc2.open(out.string()));
+    const IsoNode* dummy = nullptr;
+    for (const auto& c : doc2.root()->children)
+        if (c->name == "MODS") dummy = c->children.empty() ? nullptr : c->children[0].get();
+    CHECK(dummy);
+    if (dummy) {
+        const fs::path dummyOut = base / "dummy.out";
+        CHECK(doc2.extractTo(dummy, dummyOut.string()));
+        FILE* f = std::fopen(dummyOut.string().c_str(), "rb");
+        CHECK(f);
+        if (f) {                                      // verify pattern i*7
+            bool match = true;
+            for (size_t i = 0; i < 5000; ++i) {
+                int b = std::fgetc(f);
+                if (b != int(uint8_t(i * 7))) { match = false; break; }
+            }
+            std::fclose(f);
+            CHECK(match);
+        }
+    }
+
+    fs::remove_all(base);
+}
+
+// ---------------------------------------------------------------------------
+// support-file registry ("Useful acquired")
+// ---------------------------------------------------------------------------
+static void testSupportFiles() {
+    const auto& reg = supportFileRegistry();
+    CHECK(reg.size() == 10);                        // 6 usbutil.* + 4 IOPRP
+    size_t ioprp = 0, required = 0;
+    for (const auto& f : reg) {
+        if (f.role == SupportRole::IoprpImage) ++ioprp;
+        if (f.required) ++required;
+    }
+    CHECK(ioprp == 4);
+    CHECK(required == 4);                           // PS2LOAD, dni, dna, ljs
+
+    const auto st = checkSupportFiles({"../data"}); // repo data/ from build dir
+    size_t found = 0, verified = 0;
+    for (const auto& s : st) {
+        if (s.found) ++found;
+        if (s.verified) ++verified;
+    }
+    CHECK(found == 10);                             // repo ships the full set
+    CHECK(verified == 10);                          // byte-identical originals
+
+    // findSupportFile
+    CHECK(!findSupportFile("usbutil.dna", {"../data"}).empty());
+    CHECK(findSupportFile("NO_SUCH_FILE.XYZ", {"../data"}).empty());
+}
+
 static void testVersionCompare() {
     CHECK(isVersionNewer("0.0.2", "v0.0.3"));
     CHECK(isVersionNewer("0.0.2", "0.0.3"));
@@ -940,6 +1102,8 @@ int main() {
     testGameOps();
     testSortAndClean();
     testVersionCompare();
+    testIsoEdit();
+    testSupportFiles();
     std::printf(g_failed ? "\n%d FAILURE(S)\n" : "\nALL TESTS PASSED\n", g_failed);
     return g_failed ? 1 : 0;
 }

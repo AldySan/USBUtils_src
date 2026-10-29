@@ -182,6 +182,25 @@ std::string bootElfFromCnf(const std::string& cnf) {
     return val;
 }
 
+bool readPvd(const IsoReadFn& read, std::string* volumeId,
+             uint32_t* volumeSectors) {
+    uint8_t pvd[kSectorSize];
+    if (!read(16ull * kSectorSize, pvd, sizeof(pvd))) return false;
+    if (std::memcmp(pvd + 1, "CD001", 5) != 0) return false;
+    if (volumeId) {
+        volumeId->assign(reinterpret_cast<const char*>(pvd + 40), 32);
+        while (!volumeId->empty() &&
+               (volumeId->back() == ' ' || volumeId->back() == '\0'))
+            volumeId->pop_back();
+    }
+    if (volumeSectors) {
+        *volumeSectors = static_cast<uint32_t>(
+            pvd[80] | (pvd[81] << 8) | (pvd[82] << 16) |
+            (static_cast<uint32_t>(pvd[83]) << 24));
+    }
+    return true;
+}
+
 IsoInfo readIsoInfo(const std::string& path) {
     IsoInfo info;
     FileHandle fh;

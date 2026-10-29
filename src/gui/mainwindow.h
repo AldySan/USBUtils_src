@@ -10,6 +10,8 @@
 
 #include <QMainWindow>
 #include <QString>
+#include <QList>
+#include <functional>
 #include <memory>
 
 #include "../core/ulcfg.h"
@@ -22,6 +24,7 @@ class QLabel;
 class QPushButton;
 class QWidget;
 class QThread;
+class QGroupBox;
 
 namespace usbutils { struct OrphanGame; }
 
@@ -47,6 +50,10 @@ private slots:
     void refreshGames();
     void openDriveFolder();
     void installIso();
+    void installFromDisc();        ///< original "Create GAME from CD/DVD"
+    void openIsoExplorer();        ///< original "Open ISO to [Explore/Modify]"
+    void closeUlCfg();             ///< original "Close ul.cfg"
+    void viewConfig();             ///< original "View current config"
     void exportSelected();
     void removeSelected();
     void renameSelected();
@@ -63,6 +70,8 @@ private slots:
     void videoRipSelected();
     void dnasPatchSelected();
     void ps2LoadSelected();
+    void selectAllGames();          ///< original "Select" (mark all games)
+    void invertSelection();         ///< original "Inverse selection"
     void checkForUpdates();         ///< manual check with full feedback
     void autoUpdateCheck();         ///< silent check at startup
     void showQuickHelp();
@@ -72,8 +81,11 @@ private:
     void setUiBusy(bool busy);
     QString currentDir() const;
     int selectedRow() const;
+    QList<int> selectedRows() const;   ///< all marked games (Select system)
     void copyMoveCommon(bool move);
     void buildMenus();
+    void buildSupportPanel();          ///< "Useful acquired" status strip
+    void updateSupportPanel();
     /// Run `job` on a worker thread behind a cancelable modal progress
     /// dialog; `onDone(outcome)` runs on the GUI thread afterwards.
     void runJob(const QString& title, uint64_t expectedTotalBytes,
@@ -88,6 +100,9 @@ private:
     QLabel*       status_     = nullptr;
     QLabel*       welcome_    = nullptr;     ///< shown while no drive is open
     QPushButton*  btnOpen_    = nullptr;
+    QPushButton*  btnSelectAll_  = nullptr;  ///< "Select" (mark all games)
+    QPushButton*  btnInvert_     = nullptr;  ///< "Inverse selection"
+    QGroupBox*    supportPanel_  = nullptr;  ///< "Useful acquired" strip
     QWidget*      actionsPanel_ = nullptr;   ///< disabled while busy
 
     QString dir_;
@@ -95,4 +110,5 @@ private:
     int busyJobs_ = 0;
     bool updatePending_ = false;             ///< an update dialog is showing
     QThread* updateThread_ = nullptr;        ///< in-flight startup update check
+    QString lastUpdateCheck_;                ///< for View current config
 };

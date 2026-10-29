@@ -33,13 +33,22 @@ binary** and is maintained as a modern, documented, testable codebase.
 | **Sort games A–Z** (original "Sorting" — reorders ul.cfg on disk) | ✅ |
 | **Restore space** (original "Rest. Spc." — find & delete left-over `ul.*` files) | ✅ |
 | **Per-game file explore / extract / inject** (same-size in-place replace) | ✅ |
+| **Open ISO to [Explore/Modify]** (original TISOForm — tree view, add/delete/rename files, editable volume id, save a modified copy) | ✅ |
+| **Create game from CD/DVD** (raw-device install: GUI disc picker with PS2 probing, `install /dev/sr0` on the CLI) | ✅ |
+| **Select / Invert selection** + batch backup-export and batch remove of marked games | ✅ |
+| **Close ul.cfg** / **View current config** (original File/Tools menu entries) | ✅ |
+| **"Useful acquired"** panel — live status of the shipped support files (`usbutils support` on the CLI) | ✅ |
+| Complete original data set: 5 × `usbutil.*` + `SCEE_DD/IOPRP*.IMG` + `PS2LOAD.ELF`, checksum-verified | ✅ |
+| Application icon on Windows (embedded exe icon + version info) and Linux (hicolor + `.desktop`) | ✅ |
 | USB drive discovery (Windows / Linux / macOS) | ✅ |
 | CLI (`usbutils`) and Qt Widgets GUI (`usbutils-gui`) | ✅ |
 
 Not ported from the original: the ASPI/SPTI CD/DVD ripping + burning stack
 and the MicroUDF bootable-image builder (modern OSes burn ISOs natively).
-Creating a game straight from a disc works on Linux/macOS by passing the
-device path (`usbutils install /dev/sr0 ...`).
+Installing straight from a disc is supported instead: the GUI's
+"Install a game from a CD/DVD disc" probes each drive and reads the disc
+raw; on the CLI pass the device (`usbutils install /dev/sr0 ...`, or a
+Windows drive like `D:`).
 The video rip is fully implemented — see
 [`docs/formats/video_rip.md`](docs/formats/video_rip.md); PS2Load injection
 is documented in [`docs/formats/ps2load.md`](docs/formats/ps2load.md).
@@ -92,6 +101,12 @@ usbutils sort            -d /media/usb0      # sort the game list A-Z
 usbutils clean           -d /media/usb0      # find left-over files (dry run)
 usbutils clean           -d /media/usb0 --apply  # ...and delete them
 usbutils fix             -d /media/usb0 --apply  # correct code 666.66
+usbutils iso info game.iso                   # image summary (serial, sizes)
+usbutils iso list game.iso                   # file tree of a plain ISO
+usbutils iso extract game.iso --path "*.CNF" -o /tmp/
+usbutils install /dev/sr0 -d /media/usb0 -n "From Disc"   # CD/DVD device
+usbutils support                              # "Useful acquired": check the
+                                              # shipped data files
 usbutils check-update                               # look for a newer release
 usbutils --version
 ```
@@ -102,12 +117,15 @@ shows a dialog when something newer is available).
 
 The GUI covers the same ground without a terminal, built for non-technical
 users: a menu bar, plain-English grouped buttons with tooltips, a welcome
-guide, drive picker, game list (context menu, F2 rename, Del remove),
-install/copy/rename/remove, find-file, per-game file browser
-(extract/replace), check & repair (incl. code 666.66), recovery, drive
-report, the video-rip, DNAS and PS2Load dialogs — all long operations run
-on worker threads with cancelable progress bars. The GUI checks for
-updates automatically at startup and from the Help menu.
+guide, drive picker, game list (context menu, F2 rename, Del remove,
+mark several with Ctrl/Shift + Select all / Invert), install (ISO file or
+CD/DVD disc), copy/move/rename/remove, batch backup-export of marked
+games, find-file, per-game file browser (extract/replace), check & repair
+(incl. code 666.66), recovery, drive report, the video-rip, DNAS and
+PS2Load dialogs, "Open ISO to [Explore/Modify]", Close ul.cfg, View
+current configuration and the "Useful acquired" support-file strip — all
+long operations run on worker threads with cancelable progress bars. The
+GUI checks for updates automatically at startup and from the Help menu.
 
 ## Repository layout
 
