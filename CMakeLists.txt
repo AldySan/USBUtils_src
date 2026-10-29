@@ -51,10 +51,32 @@ if(USBUTILS_BUILD_GUI)
     find_package(QT NAMES Qt6 Qt5 COMPONENTS Widgets REQUIRED)
     find_package(Qt${QT_VERSION_MAJOR} COMPONENTS Widgets REQUIRED)
 
+    # --- cross-build support --------------------------------------------
+    # When cross-compiling (e.g. building the Windows GUI from Linux),
+    # the target kit's tool executables (moc.exe) cannot run on the host.
+    # Point USBUTILS_HOST_QT_PREFIX at a HOST Qt install of the same minor
+    # version to reuse its tools (distro layouts: <prefix>/lib/qt6/libexec).
+    set(USBUTILS_HOST_MOC "")
+    if(CMAKE_CROSSCOMPILING AND USBUTILS_HOST_QT_PREFIX)
+        set(_host_libexec "${USBUTILS_HOST_QT_PREFIX}/lib/qt6/libexec")
+        if(EXISTS "${_host_libexec}/moc")
+            set(USBUTILS_HOST_MOC "${_host_libexec}/moc")
+            if(EXISTS "${_host_libexec}/uic")
+                set(USBUTILS_HOST_UIC "${_host_libexec}/uic")
+            endif()
+            if(EXISTS "${_host_libexec}/rcc")
+                set(USBUTILS_HOST_RCC "${_host_libexec}/rcc")
+            endif()
+            message(STATUS "Cross build: using host moc from ${_host_libexec}")
+        else()
+            message(WARNING "USBUTILS_HOST_QT_PREFIX set but no moc found in ${_host_libexec}")
+        endif()
+    endif()
+
     set(CMAKE_AUTOMOC ON)
     set(CMAKE_AUTOUIC ON)
 
-    add_executable(usbutils-gui
+    add_executable(usbutils-gui WIN32
         src/gui/main.cpp
         src/gui/mainwindow.cpp
         src/gui/mainwindow.h
@@ -71,6 +93,20 @@ if(USBUTILS_BUILD_GUI)
     )
     target_link_libraries(usbutils-gui PRIVATE
         usbutils_core Qt${QT_VERSION_MAJOR}::Widgets)
+    if(USBUTILS_HOST_MOC)
+        # run the HOST Qt tools (the target kit's .exe tools cannot
+        # execute on the build machine)
+        set_target_properties(usbutils-gui PROPERTIES
+            AUTOMOC_EXECUTABLE "${USBUTILS_HOST_MOC}")
+        if(USBUTILS_HOST_UIC)
+            set_target_properties(usbutils-gui PROPERTIES
+                AUTOUIC_EXECUTABLE "${USBUTILS_HOST_UIC}")
+        endif()
+        if(USBUTILS_HOST_RCC)
+            set_target_properties(usbutils-gui PROPERTIES
+                AUTORCC_EXECUTABLE "${USBUTILS_HOST_RCC}")
+        endif()
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------
