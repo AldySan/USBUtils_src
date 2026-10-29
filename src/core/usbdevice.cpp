@@ -149,10 +149,14 @@ std::vector<UsbDrive> listDrives() {
 
 namespace {
 
+// (helper shared by listOpticalDrives and the public probe below)
+
+} // namespace
+
 /// Probe one raw device: open, read sector 16 (PVD), and walk the root
 /// directory for SYSTEM.CNF. All reads are 2048-aligned so raw Windows
 /// device handles work.
-bool probeOptical(const std::string& devicePath, OpticalDrive* out) {
+bool probeOpticalDrive(const std::string& devicePath, OpticalDrive* out) {
     FILE* f = std::fopen(devicePath.c_str(), "rb");
     if (!f) return false;
 
@@ -197,8 +201,6 @@ bool probeOptical(const std::string& devicePath, OpticalDrive* out) {
     return true;
 }
 
-} // namespace
-
 std::vector<OpticalDrive> listOpticalDrives() {
     std::vector<OpticalDrive> out;
 
@@ -214,7 +216,7 @@ std::vector<OpticalDrive> listOpticalDrives() {
         OpticalDrive od;
         od.devicePath = std::string("\\\\.\\") + root.substr(0, 2);
         od.display = "CD/DVD drive " + root.substr(0, 2);
-        if (probeOptical(od.devicePath, &od) && !od.volumeId.empty())
+        if (probeOpticalDrive(od.devicePath, &od) && !od.volumeId.empty())
             od.display += " — " + od.volumeId;
         out.push_back(std::move(od));
     }
@@ -238,7 +240,7 @@ std::vector<OpticalDrive> listOpticalDrives() {
         OpticalDrive od;
         od.devicePath = p;
         od.display = p;
-        if (probeOptical(p, &od) && !od.volumeId.empty())
+        if (probeOpticalDrive(p, &od) && !od.volumeId.empty())
             od.display += " — " + od.volumeId;
         out.push_back(std::move(od));
     }

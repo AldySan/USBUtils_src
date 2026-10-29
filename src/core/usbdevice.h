@@ -42,6 +42,11 @@ struct OpticalDrive {
 /// no disc are listed with discPresent = false.
 std::vector<OpticalDrive> listOpticalDrives();
 
+/// Probe one raw device path ("/dev/sr0", "\\\\.\\D:") for an ISO9660
+/// data disc. Returns false when the device cannot be opened; check
+/// `out->discPresent` for medium presence.
+bool probeOpticalDrive(const std::string& devicePath, OpticalDrive* out);
+
 /// True when the drive root contains ul.cfg (already a game drive).
 bool probeUlCfg(const std::string& root);
 

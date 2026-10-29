@@ -40,6 +40,9 @@
 #include <QApplication>
 #include <QThread>
 #include <QTimer>
+#include <QDateTime>
+#include <QLocale>
+#include <QDir>
 #include <QProgressDialog>
 #include <QCloseEvent>
 #include <QDesktopServices>
@@ -47,7 +50,15 @@
 #include <QClipboard>
 #include <QGuiApplication>
 #include <QFile>
+#include <QGroupBox>
+#include <QToolButton>
 #include <QIODevice>
+
+#include "isoexplorerdialog.h"
+#include "configdialog.h"
+#include "../core/supportfiles.h"
+#include "../core/usbdevice.h"
+#include "../core/installer.h"
 
 #include <atomic>
 #include <algorithm>
@@ -112,9 +123,11 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     // ---- game list --------------------------------------------------------
     gameList_ = new QListWidget(this);
     gameList_->setAlternatingRowColors(true);
+    gameList_->setSelectionMode(QAbstractItemView::ExtendedSelection);  // Select system
     gameList_->setContextMenuPolicy(Qt::CustomContextMenu);
     gameList_->setToolTip(tr("The games on this drive. Right-click a game "
-                             "for more actions."));
+                             "for more actions; hold Ctrl/Shift to mark "
+                             "several."));
     gameList_->hide();
     connect(gameList_, &QListWidget::customContextMenuRequested,
             this, [this](const QPoint& pos) {
@@ -145,6 +158,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     });
     root->addWidget(gameList_, 1);
 
+    // ---- "Useful acquired" strip (original Panel29/ListBox9): support files --
+    buildSupportPanel();
+
     // ---- buttons -----------------------------------------------------------
     actionsPanel_ = new QWidget(this);
     auto* panelL  = new QVBoxLayout(actionsPanel_);
@@ -153,21 +169,31 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     auto* gamesBox = new QGroupBox(tr("Your games"), this);
     auto* row1 = new QHBoxLayout(gamesBox);
     auto* btnInstall = new QPushButton(tr("Install a game..."), this);
+    btnSelectAll_ = new QPushButton(tr("Select all"), this);
+    btnInvert_ = new QPushButton(tr("Invert"), this);
     auto* btnCopy    = new QPushButton(tr("Copy to another drive..."), this);
     auto* btnRename = new QPushButton(tr("Rename"), this);
     auto* btnRemove = new QPushButton(tr("Remove game"), this);
     btnInstall->setToolTip(tr("Copy a game file (ISO) from your computer "
                               "onto the USB drive, ready for the console."));
+    btnSelectAll_->setToolTip(tr("Mark every game in the list (the "
+                                 "original's \"Select\" button)."));
+    btnInvert_->setToolTip(tr("Flip the marked games (the original's "
+                              "\"Inverse selection\")."));
     btnCopy->setToolTip(tr("Copy the selected game to a second USB drive."));
     btnRename->setToolTip(tr("Change how the game's name shows in the list."));
     btnRemove->setToolTip(tr("Delete the selected game from the drive."));
     connect(btnInstall, &QPushButton::clicked, this, &MainWindow::installIso);
+    connect(btnSelectAll_, &QPushButton::clicked, this, &MainWindow::selectAllGames);
+    connect(btnInvert_, &QPushButton::clicked, this, &MainWindow::invertSelection);
     connect(btnCopy,    &QPushButton::clicked, this, &MainWindow::copySelected);
     connect(btnRename,  &QPushButton::clicked, this, &MainWindow::renameSelected);
     connect(btnRemove,  &QPushButton::clicked, this, &MainWindow::removeSelected);
     btnRename->setShortcut(tr("F2"));
     btnRemove->setShortcut(tr("Del"));
     row1->addWidget(btnInstall);
+    row1->addWidget(btnSelectAll_);
+    row1->addWidget(btnInvert_);
     row1->addWidget(btnCopy);
     row1->addWidget(btnRename);
     row1->addWidget(btnRemove);
@@ -231,6 +257,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     setCentralWidget(central);
     buildMenus();
+    updateSupportPanel();
 
     QTimer::singleShot(0, this, &MainWindow::refreshDrives);
     // silent update check shortly after startup
@@ -257,6 +284,13 @@ void MainWindow::buildMenus() {
     connect(aRefresh, &QAction::triggered, this, &MainWindow::refreshDrives);
     QAction* aFolder = mFile->addAction(tr("Open drive &folder"));
     connect(aFolder, &QAction::triggered, this, &MainWindow::openDriveFolder);
+    QAction* aCloseList = mFile->addAction(tr("&Close games list"));
+    aCloseList->setShortcut(QKeySequence(tr("Ctrl+W")));   // original "Close ul.cfg"
+    connect(aCloseList, &QAction::triggered, this, &MainWindow::closeUlCfg);
+    mFile->addSeparator();
+    QAction* aIsoExp = mFile->addAction(tr("Open ISO to [&Explore/Modify]..."));
+    aIsoExp->setShortcut(QKeySequence(tr("Ctrl+I")));      // original shortcut Ctrl+I
+    connect(aIsoExp, &QAction::triggered, this, &MainWindow::openIsoExplorer);
     mFile->addSeparator();
     QAction* aExit = mFile->addAction(tr("E&xit"));
     aExit->setShortcut(QKeySequence("Alt+F4"));
@@ -264,8 +298,12 @@ void MainWindow::buildMenus() {
 
     // ---- Games ---------------------------------------------------------------
     QMenu* mGames = menuBar()->addMenu(tr("&Games"));
-    QAction* aInstall = mGames->addAction(tr("&Install a game..."));
+    QAction* aInstall = mGames->addAction(tr("&Install a game from an ISO file..."));
     connect(aInstall, &QAction::triggered, this, &MainWindow::installIso);
+    QAction* aInstallDisc = mGames->addAction(
+        tr("Install a game from a &CD/DVD disc..."));     // original "Create GAME from CD/DVD"
+    connect(aInstallDisc, &QAction::triggered, this, &MainWindow::installFromDisc);
+    mGames->addSeparator();
     QAction* aCopy = mGames->addAction(tr("&Copy to another drive..."));
     connect(aCopy, &QAction::triggered, this, &MainWindow::copySelected);
     QAction* aMove = mGames->addAction(tr("&Move to another drive..."));
@@ -299,6 +337,10 @@ void MainWindow::buildMenus() {
     mTools->addSeparator();
     QAction* aReport = mTools->addAction(tr("Drive &report..."));
     connect(aReport, &QAction::triggered, this, &MainWindow::driveReport);
+    mTools->addSeparator();
+    QAction* aConfig = mTools->addAction(tr("View current &configuration..."));
+    aConfig->setShortcut(QKeySequence(tr("Ctrl+F6")));    // original shortcut
+    connect(aConfig, &QAction::triggered, this, &MainWindow::viewConfig);
 
     // ---- Advanced ------------------------------------------------------------
     QMenu* mAdv = menuBar()->addMenu(tr("&Advanced"));
@@ -327,6 +369,8 @@ void MainWindow::setUiBusy(bool busy) {
     gameList_->setDisabled(busy);
     driveCombo_->setDisabled(busy);
     btnOpen_->setDisabled(busy);
+    btnSelectAll_->setDisabled(busy);
+    btnInvert_->setDisabled(busy);
     if (busy) {
         progress_->setValue(0);
         progress_->show();
@@ -342,6 +386,17 @@ QString MainWindow::currentDir() const {
 
 int MainWindow::selectedRow() const {
     return gameList_->currentRow();
+}
+
+QList<int> MainWindow::selectedRows() const {
+    QList<int> rows;
+    if (!gameList_) return rows;
+    // current row first (the "primary" selection), then the rest, sorted
+    const QModelIndexList sel = gameList_->selectionModel()->selectedIndexes();
+    for (const QModelIndex& idx : sel) rows.append(idx.row());
+    std::sort(rows.begin(), rows.end());
+    rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
+    return rows;
 }
 
 void MainWindow::closeEvent(QCloseEvent* ev) {
@@ -530,53 +585,364 @@ void MainWindow::installIso() {
         });
 }
 
-void MainWindow::exportSelected() {
-    const int row = selectedRow();
-    if (row < 0 || !cfg_) { QMessageBox::warning(this, tr("USBUtils"), tr("Select a game.")); return; }
+// ---------------------------------------------------------------------------
+// Create GAME from CD/DVD — original "CrearjuegodesdeDCDVD"
+// ---------------------------------------------------------------------------
 
-    const QString out = QFileDialog::getSaveFileName(this, tr("Save a backup copy of the game"),
-        QString::fromStdString(cfg_->records[row].nameStr()) + ".iso",
-        tr("ISO images (*.iso)"));
-    if (out.isEmpty()) return;
+void MainWindow::installFromDisc() {
+    if (currentDir().isEmpty()) {
+        QMessageBox::warning(this, tr("USBUtils"),
+                             tr("Select a USB drive first."));
+        return;
+    }
 
-    const UlCfgRecord rec = cfg_->records[row];
-    const QString dir = dir_;
-    const std::string id = gameIdHex(rec.nameStr());
-    const uint64_t expected =
-        gameTotalSize(dir.toStdString(), id, rec.serialStr(), rec.parts);
+    // probe optical drives (opens each device briefly)
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    const std::vector<OpticalDrive> drives = listOpticalDrives();
+    QApplication::restoreOverrideCursor();
 
-    runJob(tr("Saving a backup copy of \"%1\"...")
-               .arg(QString::fromStdString(rec.nameStr())),
-           expected,
-        [rec, out, dir](const ProgressFn& prog,
-                        const std::function<bool()>& cancel) -> JobOutcome {
-            const bool ok = usbutils::exportIso(dir.toStdString(), rec,
-                                                out.toStdString(), prog, cancel);
-            return {ok, ok ? out : QString()};
-        },
-        [this, out](const JobOutcome& r) {
+    if (drives.empty()) {
+        QMessageBox::information(this, tr("USBUtils"),
+            tr("No CD/DVD drives found on this computer."));
+        return;
+    }
+
+    QStringList items;
+    for (const OpticalDrive& d : drives) {
+        QString line = QString::fromStdString(d.display);
+        if (d.discPresent) {
+            if (d.isPs2)
+                line += tr("  [PS2 game: %1]").arg(
+                    QString::fromStdString(d.serial));
+            else if (!d.volumeId.empty())
+                line += tr("  [data disc]");
+        } else {
+            line += tr("  [no disc]");
+        }
+        items << line;
+    }
+    items << tr("Type a device path manually...");
+    bool ok = false;
+    const QString pick = QInputDialog::getItem(this,
+        tr("Install from a CD/DVD disc"),
+        tr("Which drive holds the game disc?"), items, 0, false, &ok);
+    if (!ok || pick.isEmpty()) return;
+
+    OpticalDrive chosen;
+    if (pick == tr("Type a device path manually...")) {
+        const QString typed = QInputDialog::getText(this,
+            tr("Install from a CD/DVD disc"),
+            tr("Device path (for example /dev/sr0 on Linux, or D: on "
+               "Windows):")).trimmed();
+        if (typed.isEmpty()) return;
+        chosen.devicePath = typed.toStdString();
+        chosen.display = typed.toStdString();
+        // probe the typed path
+        QApplication::setOverrideCursor(Qt::WaitCursor);
+        const bool probed = probeOpticalDrive(chosen.devicePath, &chosen);
+        QApplication::restoreOverrideCursor();
+        (void)probed;
+        if (!chosen.discPresent) {
+            QMessageBox::warning(this, tr("USBUtils"),
+                tr("Could not read a PS2 data disc from \"%1\".")
+                    .arg(typed));
+            return;
+        }
+    } else {
+        const int idx = items.indexOf(pick);
+        if (idx >= 0 && idx < int(drives.size()))
+            chosen = drives[size_t(idx)];
+    }
+
+    if (!chosen.discPresent) {
+        QMessageBox::warning(this, tr("USBUtils"),
+            tr("There is no disc in that drive. Insert the game disc and "
+               "try again."));
+        return;
+    }
+    if (chosen.dataBytes == 0) {
+        QMessageBox::warning(this, tr("USBUtils"),
+            tr("The disc is not a PS2 data disc (no ISO9660 data found)."));
+        return;
+    }
+
+    // default name from the volume id / serial
+    QString suggestion = QString::fromStdString(chosen.volumeId);
+    if (chosen.isPs2 && suggestion.isEmpty())
+        suggestion = QString::fromStdString(chosen.serial);
+    bool nameOk = false;
+    const QString name = QInputDialog::getText(this, tr("Name the game"),
+        tr("How should this game be called in the list?"),
+        QLineEdit::Normal, suggestion, &nameOk);
+    if (!nameOk || name.isEmpty()) return;
+
+    const QString dir = currentDir();
+    const QString dev = QString::fromStdString(chosen.devicePath);
+    const uint64_t expected = chosen.dataBytes;
+
+    runJob(tr("Installing \"%1\" from disc...").arg(name), expected,
+        [dev, name, dir, expected](
+            const ProgressFn& prog,
+            const std::function<bool()>& cancel) -> JobOutcome {
+            InstallOptions opt;
+            opt.gameName = name.toStdString();
+            opt.sourceSize = expected;     // raw device: PVD-derived size
+            const InstallResult r = usbutils::installIso(
+                dev.toStdString(), dir.toStdString(), opt, prog, cancel);
             if (r.ok)
-                status_->setText(tr("Backup saved: %1").arg(out));
-            else if (r.message == QLatin1String("cancelled"))
-                status_->setText(tr("Backup cancelled."));
-            else
+                return {true, QString("Installed \"%1\" — parts: %2, %3 written.")
+                            .arg(name).arg(r.parts).arg(humanSize(r.totalBytes))};
+            return {false, QString::fromStdString(r.error)};
+        },
+        [this, dir](const JobOutcome& r) {
+            if (r.ok) {
+                QMessageBox::information(this, tr("USBUtils"), r.message);
+                dir_ = dir;
+                refreshGames();
+            } else if (r.message == QLatin1String("cancelled")) {
+                status_->setText(tr("Install cancelled."));
+            } else {
                 QMessageBox::critical(this, tr("USBUtils"),
-                    tr("Backup failed (or was cancelled)."));
+                    tr("Install failed: %1").arg(r.message));
+            }
+        });
+}
+
+// ---------------------------------------------------------------------------
+// Open ISO to [Explore/Modify] — original TISOForm
+// ---------------------------------------------------------------------------
+
+void MainWindow::openIsoExplorer() {
+    const QString iso = QFileDialog::getOpenFileName(this,
+        tr("Pick the ISO image to explore"), QString(),
+        tr("ISO images (*.iso *.ISO);;All files (*)"));
+    if (iso.isEmpty()) return;
+
+    auto* dlg = new IsoExplorerDialog(this, iso);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    dlg->setWindowModality(Qt::NonModal);
+    dlg->show();
+}
+
+// ---------------------------------------------------------------------------
+// Close ul.cfg — original File menu "Close ul.cfg" (Ctrl+W)
+// ---------------------------------------------------------------------------
+
+void MainWindow::closeUlCfg() {
+    if (!cfg_ && dir_.isEmpty()) return;
+    if (busyJobs_ > 0) {
+        QMessageBox::information(this, tr("USBUtils"),
+            tr("Please wait — an operation is still running."));
+        return;
+    }
+    cfg_.reset();
+    dir_.clear();
+    gameList_->clear();
+    gameList_->hide();
+    welcome_->show();
+    status_->setText(tr("Games list closed. Open one from the File menu."));
+    updateSupportPanel();
+}
+
+// ---------------------------------------------------------------------------
+// View current config — original "View current config" (Ctrl+F6)
+// ---------------------------------------------------------------------------
+
+void MainWindow::viewConfig() {
+    ConfigDialog dlg(this);
+    ConfigDialog::Context ctx;
+    ctx.currentDrive = dir_;
+    ctx.ulCfgPath = dir_.isEmpty() ? QString()
+        : QDir(dir_).filePath("ul.cfg");
+    ctx.gameCount = cfg_ ? int(cfg_->records.size()) : 0;
+    ctx.lastUpdateCheck = lastUpdateCheck_;
+    dlg.setContext(ctx);
+    dlg.exec();
+}
+
+// ---------------------------------------------------------------------------
+// Select system — original "Select" (mark all) + "Inverse selection"
+// ---------------------------------------------------------------------------
+
+void MainWindow::selectAllGames() {
+    if (!gameList_->count()) return;
+    gameList_->selectAll();
+    status_->setText(tr("%1 game(s) marked.").arg(gameList_->count()));
+}
+
+void MainWindow::invertSelection() {
+    if (!gameList_->count()) return;
+    const int n = gameList_->count();
+    for (int i = 0; i < n; ++i)
+        gameList_->item(i)->setSelected(!gameList_->item(i)->isSelected());
+    const int marked = gameList_->selectedItems().size();
+    status_->setText(tr("%1 game(s) marked.").arg(marked));
+}
+
+// ---------------------------------------------------------------------------
+// "Useful acquired" support-file strip — original Panel29/ListBox9
+// ---------------------------------------------------------------------------
+
+void MainWindow::buildSupportPanel() {
+    supportPanel_ = new QGroupBox(tr("Useful acquired — support files"), this);
+    supportPanel_->setToolTip(tr(
+        "Shows whether the files that some tools need are present. All of "
+        "them ship with USBUtils in the 'data' folder next to the program."));
+    auto* lay = new QHBoxLayout(supportPanel_);
+    lay->setContentsMargins(8, 4, 8, 4);
+    lay->addStretch(1);
+    // content is (re)built by updateSupportPanel()
+}
+
+void MainWindow::updateSupportPanel() {
+    if (!supportPanel_) return;
+    // wipe previous content (keep the layout itself)
+    while (auto* item = supportPanel_->layout()->takeAt(0)) {
+        if (item->widget()) item->widget()->deleteLater();
+        delete item;
+    }
+
+    const std::vector<SupportStatus> st = checkSupportFiles();
+    size_t found = 0;
+    for (const SupportStatus& s : st)
+        if (s.found) ++found;
+    const size_t total = st.size();
+
+    auto* lay = static_cast<QHBoxLayout*>(supportPanel_->layout());
+    auto* summary = new QLabel(
+        tr("%1/%2 present").arg(found).arg(total), supportPanel_);
+    const QString color = (found == total) ? QStringLiteral("#1a7f37")
+                                            : QStringLiteral("#b45309");
+    summary->setStyleSheet(QStringLiteral("color:%1; font-weight:bold;")
+                               .arg(color));
+    lay->addWidget(summary);
+    lay->addSpacing(12);
+
+    // compact per-file chips (required files only — the full list lives in
+    // Tools → View current configuration)
+    for (const SupportStatus& s : st) {
+        if (!s.file.required) continue;
+        auto* chip = new QLabel(QString::fromLatin1(s.file.fileName),
+                                supportPanel_);
+        chip->setToolTip(s.found
+            ? tr("Needed for: %1 — found").arg(
+                QString::fromLatin1(s.file.feature))
+            : tr("Needed for: %1 — MISSING").arg(
+                QString::fromLatin1(s.file.feature)));
+        chip->setStyleSheet(QStringLiteral(
+            "padding:1px 7px; border-radius:7px; color:%1; background:%2;")
+            .arg(s.found ? QStringLiteral("#1a7f37")
+                         : QStringLiteral("#b91c1c"))
+            .arg(s.found ? QStringLiteral("#e6f4ea")
+                         : QStringLiteral("#fde8e8")));
+        lay->addWidget(chip);
+        lay->addSpacing(4);
+    }
+    lay->addStretch(1);
+}
+
+void MainWindow::exportSelected() {
+    const QList<int> rows = selectedRows();
+    if (rows.isEmpty() || !cfg_) {
+        QMessageBox::warning(this, tr("USBUtils"), tr("Select a game."));
+        return;
+    }
+
+    // single game: pick a file. several marked games (the original's
+    // "Conv. ISO" for marked games): pick a folder and export each as
+    // "<game name>.iso".
+    QString outFile;
+    QString outDir;
+    if (rows.size() == 1) {
+        outFile = QFileDialog::getSaveFileName(this,
+            tr("Save a backup copy of the game"),
+            QString::fromStdString(cfg_->records[rows.first()].nameStr()) + ".iso",
+            tr("ISO images (*.iso)"));
+        if (outFile.isEmpty()) return;
+    } else {
+        outDir = QFileDialog::getExistingDirectory(this,
+            tr("Save %1 backup copies into which folder?")
+                .arg(rows.size()));
+        if (outDir.isEmpty()) return;
+    }
+
+    const QString dir = dir_;
+    uint64_t expectedTotal = 0;
+    std::vector<UlCfgRecord> recs;
+    for (int row : rows) {
+        if (row < 0 || row >= int(cfg_->records.size())) continue;
+        recs.push_back(cfg_->records[size_t(row)]);
+        expectedTotal += gameTotalSize(dir.toStdString(),
+            gameIdHex(cfg_->records[size_t(row)].nameStr()),
+            cfg_->records[size_t(row)].serialStr(),
+            cfg_->records[size_t(row)].parts);
+    }
+
+    runJob(rows.size() == 1
+               ? tr("Saving a backup copy of \"%1\"...")
+                     .arg(QString::fromStdString(recs.front().nameStr()))
+               : tr("Saving %1 backup copies...").arg(recs.size()),
+           expectedTotal,
+        [recs, outFile, outDir, dir](const ProgressFn& prog,
+                                     const std::function<bool()>& cancel) -> JobOutcome {
+            int done = 0;
+            for (const UlCfgRecord& rec : recs) {
+                QString target = outFile;
+                if (target.isEmpty())
+                    target = QDir(outDir).filePath(
+                        QString::fromStdString(rec.nameStr()) + ".iso");
+                if (!usbutils::exportIso(dir.toStdString(), rec,
+                                         target.toStdString(), prog, cancel))
+                    return {false, QString::fromStdString(rec.nameStr())};
+                ++done;
+            }
+            return {true, QString::number(done)};
+        },
+        [this, outFile, outDir, rows](const JobOutcome& r) {
+            if (r.ok) {
+                status_->setText(rows.size() == 1
+                    ? tr("Backup saved: %1").arg(outFile)
+                    : tr("%1 backups saved into %2").arg(r.message).arg(outDir));
+            } else if (r.message == QLatin1String("cancelled")) {
+                status_->setText(tr("Backup cancelled."));
+            } else {
+                QMessageBox::critical(this, tr("USBUtils"),
+                    tr("Backup of \"%1\" failed (or was cancelled).").arg(r.message));
+            }
         });
 }
 
 void MainWindow::removeSelected() {
-    const int row = selectedRow();
-    if (row < 0 || !cfg_) { QMessageBox::warning(this, tr("USBUtils"), tr("Select a game.")); return; }
-    if (QMessageBox::question(this, tr("USBUtils"),
-            tr("Remove \"%1\" from the drive?\n\nIts files will be deleted. "
-               "Keep a backup copy first if you might want it back.")
-                .arg(QString::fromStdString(cfg_->records[row].nameStr()))) != QMessageBox::Yes)
+    const QList<int> rows = selectedRows();
+    if (rows.isEmpty() || !cfg_) {
+        QMessageBox::warning(this, tr("USBUtils"), tr("Select a game."));
+        return;
+    }
+    QString question;
+    if (rows.size() == 1) {
+        question = tr("Remove \"%1\" from the drive?\n\nIts files will be "
+                      "deleted. Keep a backup copy first if you might want "
+                      "it back.")
+            .arg(QString::fromStdString(cfg_->records[rows.first()].nameStr()));
+    } else {
+        question = tr("Remove these %1 games from the drive?\n\nTheir files "
+                      "will be deleted. Keep a backup copy first if you "
+                      "might want them back.").arg(rows.size());
+    }
+    if (QMessageBox::question(this, tr("USBUtils"), question)
+            != QMessageBox::Yes)
         return;
     QApplication::setOverrideCursor(Qt::WaitCursor);
-    const int n = cfg_->removeGame(static_cast<size_t>(row));
+    int files = 0, games = 0;
+    // delete from the highest row down so indices stay valid
+    for (auto it = rows.rbegin(); it != rows.rend(); ++it) {
+        if (*it < 0 || *it >= int(cfg_->records.size())) continue;
+        files += cfg_->removeGame(size_t(*it));
+        ++games;
+    }
     QApplication::restoreOverrideCursor();
-    status_->setText(tr("Removed (%1 file(s) deleted).").arg(n));
+    status_->setText(tr("Removed %1 game(s) (%2 file(s) deleted).")
+                         .arg(games).arg(files));
     refreshGames();
 }
 
@@ -1056,6 +1422,8 @@ void MainWindow::handleUpdateResult(bool manual) {
         QMetaObject::invokeMethod(this, [this, rel, manual]() {
             updateThread_ = nullptr;
             updatePending_ = false;
+            lastUpdateCheck_ = QLocale::system().toString(
+                QDateTime::currentDateTime(), QLocale::ShortFormat);
 
             if (!rel.ok) {
                 if (manual)
