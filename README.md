@@ -87,8 +87,13 @@ usbutils copy 0 --to /media/usb1 -d /media/usb0   # copy game to 2nd drive
 usbutils move all --to /media/usb1 -d /media/usb0 # move every game over
 usbutils report          -d /media/usb0 -o report.txt
 usbutils fix             -d /media/usb0 --apply  # correct code 666.66
+usbutils check-update                               # look for a newer release
 usbutils --version
 ```
+
+Both the CLI and the GUI can check for new releases on their own
+(`usbutils check-update`; the GUI checks automatically at startup and
+shows a dialog when something newer is available).
 
 The GUI covers the same ground without a terminal: drive picker, game
 list (context menu, F2 rename, Del remove), install/export/rename/remove,

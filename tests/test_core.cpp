@@ -13,6 +13,7 @@
  *  10. exact IOPRP location (DNAS patch target)
  * 11. gameops: find / files / extract / inject / copy / move /
  *     correct-code-666.66 / general report
+ * 12. update: version comparison logic
  */
 #include "ulcfg.h"
 #include "ulid.h"
@@ -25,6 +26,7 @@
 #include "videorip.h"
 #include "ps2load.h"
 #include "gameops.h"
+#include "update.h"
 #include "port.h"
 
 #include <cstdio>
@@ -829,6 +831,23 @@ static void testGameOps() {
     fs::remove_all(dest2);
 }
 
+// ---------------------------------------------------------------------------
+// 12. update: version comparison
+// ---------------------------------------------------------------------------
+
+static void testVersionCompare() {
+    CHECK(isVersionNewer("0.0.2", "v0.0.3"));
+    CHECK(isVersionNewer("0.0.2", "0.0.3"));
+    CHECK(isVersionNewer("0.0.9", "v0.0.10"));
+    CHECK(isVersionNewer("0.0.2", "1.0.0"));
+    CHECK(!isVersionNewer("0.0.3", "v0.0.3"));
+    CHECK(!isVersionNewer("0.0.3", "v0.0.2"));
+    CHECK(!isVersionNewer("0.0.3", "V0.0.3"));
+    CHECK(!isVersionNewer("1.2.3", "1.2.3"));
+    CHECK(isVersionNewer("1.2", "1.2.1"));
+    CHECK(!isVersionNewer("1.2.1", "1.2"));
+}
+
 int main() {
     std::printf("== USBUtils core tests ==\n");
     testCrcId();
@@ -844,6 +863,7 @@ int main() {
     testIoprpLocate();
     testPs2Load();
     testGameOps();
+    testVersionCompare();
     std::printf(g_failed ? "\n%d FAILURE(S)\n" : "\nALL TESTS PASSED\n", g_failed);
     return g_failed ? 1 : 0;
 }
