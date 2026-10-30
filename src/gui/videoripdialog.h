@@ -30,6 +30,7 @@ public:
 
 protected:
     void closeEvent(QCloseEvent* ev) override;
+    void reject() override;   // Esc / Close button must respect the busy guard too
 
 private slots:
     void ripSelected();

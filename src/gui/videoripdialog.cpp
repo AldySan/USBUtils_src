@@ -287,3 +287,15 @@ void VideoRipDialog::closeEvent(QCloseEvent* ev) {
     }
     QDialog::closeEvent(ev);
 }
+
+// Esc and the Close button call reject() directly — it does NOT go through
+// closeEvent(), so without this override the (stack-allocated) dialog could
+// be destroyed while a rip/restore worker thread still posts events to it.
+void VideoRipDialog::reject() {
+    if (busyJobs_ > 0) {
+        QMessageBox::information(this, tr("Videos"),
+            tr("Please wait — an operation is still running (or cancel it)."));
+        return;
+    }
+    QDialog::reject();
+}

@@ -140,7 +140,8 @@ bool IsoExplorerDialog::loadImage(const QString& path) {
 
     volIdEdit_->blockSignals(true);
     volIdEdit_->setText(QString::fromStdString(doc_->volumeId()));
-    volIdEdit_->blockSignals(true);
+    volIdEdit_->blockSignals(false);   // was blockSignals(true) — kept the
+                                       // editable volume id permanently dead
     volIdEdit_->setEnabled(true);
     sourceLine_->setText(tr("Image: %1 (%2)")
         .arg(QDir::toNativeSeparators(path))
