@@ -46,15 +46,17 @@
 #include "../core/supportfiles.h"
 
 #ifndef USBUTILS_VERSION
-#define USBUTILS_VERSION "0.0.1"
+#define USBUTILS_VERSION "0.0.0"   // keep in sync with src/core/update.cpp
 #endif
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <cctype>
 #include <string>
 #include <vector>
 #include <map>
+#include <set>
 #include <functional>
 #include <filesystem>
 
@@ -117,6 +119,25 @@ static std::string humanSize(uint64_t b) {
     return out;
 }
 
+/// Keep multi-file output names unique within one command: two in-game
+/// files that flatten to the same base name must not silently overwrite
+/// each other in the output directory. Appends _1, _2, ... before the
+/// extension on collision.
+static std::string dedupeName(std::string base, std::set<std::string>& used) {
+    std::string candidate = base;
+    size_t n = 1;
+    const size_t dot = base.find_last_of('.');
+    while (used.count(candidate)) {
+        char suffix[32];
+        std::snprintf(suffix, sizeof(suffix), "_%zu", n++);
+        candidate = (dot == std::string::npos)
+            ? base + suffix
+            : base.substr(0, dot) + suffix + base.substr(dot);
+    }
+    used.insert(candidate);
+    return candidate;
+}
+
 static ProgressFn makeProgress() {
     return [](uint64_t done, uint64_t total) {
         std::printf("\r  %s / %s", humanSize(done).c_str(), humanSize(total).c_str());
@@ -152,9 +173,19 @@ static Args parse(int argc, char** argv) {
         else if (s == "--to") a.dest = next();
         else if (s == "--path") a.path = next();
         else if (s == "--file") a.file = next();
-        else if (s == "--size") a.sizeFilter = std::strtoull(next().c_str(), nullptr, 10);
+        else if (s == "--size") {
+            const std::string v = next();
+            if (v.empty() || v.find_first_not_of("0123456789") != std::string::npos) {
+                std::printf("ERROR: bad --size value: %s\n", v.c_str());
+                std::exit(2);
+            }
+            a.sizeFilter = std::strtoull(v.c_str(), nullptr, 10);
+        }
         else if (a.cmd == "ps2load" && a.sub.empty()
                  && (s == "inject" || s == "remove" || s == "status"))
+            a.sub = s;
+        else if (a.cmd == "dnas" && a.sub.empty()
+                 && (s == "list" || s == "patch"))
             a.sub = s;
         else if (a.cmd == "iso" && a.sub.empty()
                  && (s == "info" || s == "list" || s == "extract"))
@@ -163,10 +194,16 @@ static Args parse(int argc, char** argv) {
         else if (s == "--apply") a.apply = true;
         else if (s == "--no-backup") a.noBackup = true;
         else if (s == "all") a.all = true;
-        else if (std::isdigit(static_cast<unsigned char>(s[0])) && s.find_first_not_of("0123456789") == std::string::npos)
-            a.index = std::atoi(s.c_str());
+        // positional file/pattern arguments take priority over the game
+        // index: `find 666` is a pattern, not game #666
         else if (a.iso.empty() && (a.cmd == "install" || a.cmd == "iso")) a.iso = s;
         else if (a.pattern.empty() && a.cmd == "find") a.pattern = s;
+        else if (std::isdigit(static_cast<unsigned char>(s[0])) && s.find_first_not_of("0123456789") == std::string::npos) {
+            // saturate instead of atoi: on LP64 atoi("4294967296") wraps
+            // to 0 and silently targets the WRONG game
+            const long long v = std::strtoll(s.c_str(), nullptr, 10);
+            a.index = v > 1000000 ? 1000000 : static_cast<int>(v);
+        }
     }
     return a;
 }
@@ -183,6 +220,8 @@ static bool resolveGame(const Args& a, UlCfg& cfg, size_t& index,
 }
 
 static int cmdList(const Args& a) {
+    if (a.dir.empty()) { usage(); return 2; }   // a missing -d must not
+                                                // silently list the CWD
     UlCfg cfg;
     if (!cfg.load(a.dir)) {
         std::printf("no ul.cfg in %s (empty or new drive)\n", a.dir.c_str());
@@ -236,14 +275,16 @@ static int cmdExport(const Args& a) {
         std::filesystem::create_directories(outDir, ec);
         if (ec) { std::printf("ERROR: cannot create %s\n", outDir.c_str()); return 1; }
         bool ok = true;
-        for (size_t i = 0; i < cfg.records.size() && ok; ++i) {
-            std::string name = cfg.records[i].nameStr();
+        std::set<std::string> usedNames;   // two games sharing a display name
+        for (size_t i = 0; i < cfg.records.size() && ok; ++i) {  // must not overwrite
+            std::string name = cfg.records[i].nameStr();         // each other's ISO
             for (char& c : name)
                 if (std::strchr("\\/:*?\"<>|", c)) c = '_';
+            name = dedupeName(name, usedNames) + ".iso";
             const std::string outPath =
                 (outDir.back() == '/' || outDir.back() == '\\')
-                    ? outDir + name + ".iso"
-                    : outDir + "/" + name + ".iso";
+                    ? outDir + name
+                    : outDir + "/" + name;
             ok = exportOne(i, outPath);
         }
         return ok ? 0 : 1;
@@ -359,7 +400,10 @@ static int cmdRecover(const Args& a) {
         }
     }
     if (a.apply) {
-        cfg.save();
+        if (!cfg.save()) {
+            std::printf("ERROR: could not write ul.cfg (drive read-only or full?)\n");
+            return 1;
+        }
         std::printf("ul.cfg updated\n");
     } else {
         std::printf("run with --apply to rebuild ul.cfg\n");
@@ -507,7 +551,8 @@ static int cmdDnas(const Args& a) {
     if (!pkg.loadIndex(a.dni)) { std::printf("ERROR: cannot read %s\n", a.dni.c_str()); return 1; }
     if (!a.dna.empty()) pkg.setDataPath(a.dna);
 
-    if (a.cmd == "list" || a.index < 0) {
+    if (a.sub == "patch" && a.index < 0) { usage(); return 2; }
+    if (a.sub != "patch") {   // plain listing (also the no-sub default)
         for (const auto& e : pkg.entries())
             std::printf("DNAS%-5s size=%7u offset=%llu\n", e.version.c_str(),
                         e.size, static_cast<unsigned long long>(e.offset));
@@ -598,7 +643,7 @@ static int cmdPs2Load(const Args& a) {
 // ---------------------------------------------------------------------------
 
 static int cmdFind(const Args& a) {
-    if (a.dir.empty()) { usage(); return 2; }
+    if (a.dir.empty() || a.pattern.empty()) { usage(); return 2; }  // empty pattern would match everything
     UlCfg cfg;
     if (!cfg.load(a.dir)) { std::printf("ERROR: no ul.cfg in %s\n", a.dir.c_str()); return 1; }
 
@@ -672,15 +717,24 @@ static int cmdExtract(const Args& a) {
     }
 
     bool ok = true;
+    std::set<std::string> usedNames;
     for (const IsoEntry& e : selection) {
         std::string outPath = a.out;
         if (many) {
             std::string name = e.name;
             for (char& c : name) if (c == '\\' || c == '/') c = '_';
+            name = dedupeName(name, usedNames);
             outPath = (outDir.back() == '/' || outDir.back() == '\\')
                           ? outDir + name : outDir + "/" + name;
         } else if (outPath.empty()) {
             outPath = e.name;                  // single match: default name
+        } else {
+            // single match with -o: an existing directory means "put the
+            // file inside it" (same rule as `iso extract`)
+            std::error_code ec2;
+            if (std::filesystem::is_directory(outPath, ec2))
+                outPath = (outPath.back() == '/' || outPath.back() == '\\')
+                              ? outPath + e.name : outPath + "/" + e.name;
         }
         std::printf("extracting %s ...\n", e.path.c_str());
         if (!extractGameFile(a.dir, id, cfg.records[index].serialStr(),
@@ -761,7 +815,11 @@ static int cmdReport(const Args& a) {
     if (!a.out.empty()) {
         FILE* f = std::fopen(a.out.c_str(), "wb");
         if (!f) { std::printf("ERROR: cannot write %s\n", a.out.c_str()); return 1; }
-        std::fwrite(rep.data(), 1, rep.size(), f);
+        if (std::fwrite(rep.data(), 1, rep.size(), f) != rep.size()) {
+            std::fclose(f);
+            std::printf("ERROR: short write on %s (disk full?)\n", a.out.c_str());
+            return 1;
+        }
         std::fclose(f);
         std::printf("\nreport saved to %s\n", a.out.c_str());
     }
@@ -789,6 +847,7 @@ static int cmdFix(const Args& a) {
         for (const SerialFix& f : fixes)
             if (!f.applied && !f.newSerial.empty()) ++failed;
         if (failed) std::printf("WARNING: %d fix(es) could not be applied\n", failed);
+        return failed ? 1 : 0;   // scripts must see partial failure
     }
     return 0;
 }
@@ -895,12 +954,16 @@ static int cmdIso(const Args& a) {
             return 1;
         }
         std::error_code ec;
-        if (many) std::filesystem::create_directories(a.out, ec);
+        if (many) {
+            std::filesystem::create_directories(a.out, ec);
+            if (ec) { std::printf("ERROR: cannot create %s\n", a.out.c_str()); return 1; }
+        }
         bool ok = true;
+        std::set<std::string> usedNames;
         for (const IsoNode* n : selection) {
             std::string outPath = a.out;
             if (many) {
-                std::string name = n->name;
+                std::string name = dedupeName(n->name, usedNames);
                 outPath = (outPath.back() == '/' || outPath.back() == '\\')
                               ? outPath + name : outPath + "/" + name;
             } else if (outPath.empty()) {
