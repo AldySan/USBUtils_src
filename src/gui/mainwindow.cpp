@@ -267,10 +267,11 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 MainWindow::~MainWindow() {
     // The startup update check captures `this`; if it is still talking to
     // GitHub while the window is being destroyed, wait for it to finish
-    // before ~QObject runs. 60 s covers the worst-case HTTP timeout chain
-    // (two requests x four 10 s WinHTTP timeouts + DNS) with margin.
+    // before ~QObject runs. Unbounded wait: the 60 s cap was shorter than
+    // the documented worst-case timeout chain, and a timed-out wait would
+    // leave the worker posting events into a half-destroyed window.
     if (updateThread_ && updateThread_->isRunning())
-        updateThread_->wait(60000);
+        updateThread_->wait();
 }
 
 void MainWindow::buildMenus() {
@@ -364,7 +365,11 @@ void MainWindow::buildMenus() {
 
 void MainWindow::setUiBusy(bool busy) {
     // Only the interactive panel is disabled: the progress bar and status
-    // label stay alive so the user sees live feedback.
+    // label stay alive so the user sees live feedback. The menu bar must
+    // go too: after a progress-dialog Cancel it stays reachable while the
+    // job keeps running, and File→Open / Games→Remove would re-enter
+    // mid-operation.
+    menuBar()->setEnabled(!busy);
     actionsPanel_->setDisabled(busy);
     gameList_->setDisabled(busy);
     driveCombo_->setDisabled(busy);
@@ -892,7 +897,9 @@ void MainWindow::exportSelected() {
                         QString::fromStdString(rec.nameStr()) + ".iso");
                 if (!usbutils::exportIso(dir.toStdString(), rec,
                                          target.toStdString(), prog, cancel))
-                    return {false, QString::fromStdString(rec.nameStr())};
+                    return {false, cancel()
+                        ? QStringLiteral("cancelled")
+                        : QString::fromStdString(rec.nameStr())};
                 ++done;
             }
             return {true, QString::number(done)};
@@ -906,7 +913,7 @@ void MainWindow::exportSelected() {
                 status_->setText(tr("Backup cancelled."));
             } else {
                 QMessageBox::critical(this, tr("USBUtils"),
-                    tr("Backup of \"%1\" failed (or was cancelled).").arg(r.message));
+                    tr("Backup of \"%1\" failed.").arg(r.message));
             }
         });
 }
@@ -1019,21 +1026,20 @@ void MainWindow::copyMoveCommon(bool move) {
         return;
 
     const QString srcDir = dir_;
-    const int idx = row;
+    // snapshot: the worker must not touch the GUI-owned live cfg_ (a Move
+    // even mutates it) — re-resolve the record by id+serial instead
+    auto cfgSnap = std::make_shared<UlCfg>(*cfg_);
     runJob(tr("%1 \"%2\"...")
                .arg(move ? tr("Moving") : tr("Copying"))
                .arg(QString::fromStdString(rec.nameStr())),
            size,
-        [this, srcDir, idx, dest, move](const ProgressFn& prog,
+        [cfgSnap, srcDir, dest, move, rec](const ProgressFn& prog,
                                         const std::function<bool()>& cancel) -> JobOutcome {
-            // NOTE: uses the live cfg_ (record positions may have changed
-            // since the dialog was opened; re-resolve by id+serial)
-            const std::string id2 = gameIdHex(cfg_->records[idx].nameStr());
-            const size_t at = cfg_->findByIdSerial(
-                id2, cfg_->records[idx].serialStr());
+            const std::string id2 = gameIdHex(rec.nameStr());
+            const size_t at = cfgSnap->findByIdSerial(id2, rec.serialStr());
             if (at == SIZE_MAX)
                 return {false, tr("the game is no longer in the list")};
-            const CopyResult r = copyGame(srcDir.toStdString(), *cfg_, at,
+            const CopyResult r = copyGame(srcDir.toStdString(), *cfgSnap, at,
                                           dest.toStdString(), move, prog, cancel);
             if (r.ok)
                 return {true, QString("%1 (%2 copied)")
@@ -1146,8 +1152,10 @@ void MainWindow::fixBrokenSerials() {
 }
 
 void MainWindow::recoverGames() {
-    if (currentDir().isEmpty()) return;
-    const auto orphans = findOrphans(currentDir().toStdString());
+    // the OPENED list's drive, not the combo selection (see sortGamesList)
+    if (dir_.isEmpty()) return;
+    const QString dir = dir_;
+    const auto orphans = findOrphans(dir.toStdString());
     if (orphans.empty()) {
         QMessageBox::information(this, tr("USBUtils"), tr("No orphan games found."));
         return;
@@ -1165,7 +1173,7 @@ void MainWindow::recoverGames() {
 
     QApplication::setOverrideCursor(Qt::WaitCursor);
     UlCfg cfg;
-    cfg.load(currentDir().toStdString());
+    cfg.load(dir.toStdString());
     for (const OrphanGame& og : orphans)
         cfg.append(makeRecoveredRecord(og, og.suggestedName));
     const bool saved = cfg.save();
@@ -1180,7 +1188,7 @@ void MainWindow::recoverGames() {
 // ---------------------------------------------------------------------------
 
 void MainWindow::sortGamesList() {
-    if (!cfg_) {
+    if (!cfg_ || dir_.isEmpty()) {
         QMessageBox::information(this, tr("Sort games"),
             tr("Open a games list first."));
         return;
@@ -1190,8 +1198,10 @@ void MainWindow::sortGamesList() {
             tr("Nothing to sort — fewer than two games on the list."));
         return;
     }
+    // operate on the OPENED list (dir_), not on whatever the combo shows —
+    // the combo stays editable and may point at another drive
     size_t moved = 0;
-    const bool ok = usbutils::sortGames(currentDir().toStdString(), &moved);
+    const bool ok = usbutils::sortGames(dir_.toStdString(), &moved);
     if (!ok) {
         QMessageBox::warning(this, tr("Sort games"),
             tr("Could not write ul.cfg — the list was not changed."));
@@ -1205,7 +1215,8 @@ void MainWindow::sortGamesList() {
 }
 
 void MainWindow::cleanDriveSpace() {
-    const QString dir = currentDir();
+    // the OPENED list's drive, not the combo selection (see sortGamesList)
+    const QString dir = dir_;
     if (dir.isEmpty()) {
         QMessageBox::information(this, tr("Clean up drive space"),
             tr("Open a games list first."));

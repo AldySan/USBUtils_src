@@ -11,6 +11,7 @@
 
 #include <QDialog>
 #include <QString>
+#include <QCloseEvent>
 
 #include "../core/iso9660.h"
 
@@ -26,6 +27,14 @@ public:
     GameFilesDialog(const QString& dir, const QString& gameName,
                     const QString& idHex, const QString& serial,
                     uint32_t parts, QWidget* parent = nullptr);
+
+protected:
+    // the dialog runs on the stack of its caller: closing it while a
+    // worker thread still posts events to it is a use-after-free, so both
+    // the window-manager close and reject() (Esc / Close button) respect
+    // the busy counter
+    void closeEvent(QCloseEvent* ev) override;
+    void reject() override;
 
 private slots:
     void extractSelected();
@@ -44,4 +53,5 @@ private:
     QLabel*       info_  = nullptr;
     QPushButton*  btnExtract_ = nullptr;
     QPushButton*  btnReplace_ = nullptr;
+    int busyJobs_ = 0;
 };

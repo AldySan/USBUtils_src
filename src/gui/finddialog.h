@@ -9,6 +9,7 @@
 
 #include <QDialog>
 #include <QString>
+#include <QCloseEvent>
 
 #include "../core/ulcfg.h"
 #include "../core/gameops.h"
@@ -25,6 +26,12 @@ class FindDialog : public QDialog {
     Q_OBJECT
 public:
     FindDialog(const QString& dir, const usbutils::UlCfg& cfg, QWidget* parent = nullptr);
+
+protected:
+    // stack-allocated dialog + worker threads posting events to it: both
+    // close paths must respect the busy counter or it is a use-after-free
+    void closeEvent(QCloseEvent* ev) override;
+    void reject() override;
 
 private slots:
     void search();
@@ -43,4 +50,5 @@ private:
     QPushButton*  btnExtract_ = nullptr;
 
     std::vector<usbutils::FileHit> hits_;
+    int busyJobs_ = 0;
 };

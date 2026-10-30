@@ -102,12 +102,14 @@ void GameFilesDialog::loadFiles() {
     const QString dir = dir_, idHex = idHex_, serial = serial_;
     const uint32_t parts = parts_;
 
+    ++busyJobs_;
     QThread* th = new usbutils::WorkerThread([this, dir, idHex, serial, parts, dlg]() {
         std::string err;
         const auto files = listGameFiles(dir.toStdString(),
                                          idHex.toStdString(),
                                          serial.toStdString(), parts, &err);
         QMetaObject::invokeMethod(this, [this, files, err, dlg]() {
+            --busyJobs_;
             files_ = files;
             table_->clearContents();
             table_->setRowCount(static_cast<int>(files_.size()));
@@ -164,6 +166,7 @@ void GameFilesDialog::extractSelected() {
         cancelled->store(true);
     });
 
+    ++busyJobs_;
     QThread* th = new usbutils::WorkerThread(
         [this, dir, idHex, serial, parts, entry, out, dlg, cancelled]() {
         const bool ok = extractGameFile(
@@ -178,13 +181,17 @@ void GameFilesDialog::extractSelected() {
                 }, Qt::QueuedConnection);
             },
             [cancelled]() { return cancelled->load(); });
-        QMetaObject::invokeMethod(this, [this, ok, out, dlg]() {
+        QMetaObject::invokeMethod(this, [this, ok, out, dlg, cancelled]() {
+            --busyJobs_;
             dlg->hide();
             dlg->deleteLater();
             setEnabled(true);
             if (ok)
                 QMessageBox::information(this, windowTitle(),
                     tr("Saved a copy to:\n%1").arg(out));
+            else if (cancelled->load())
+                QMessageBox::information(this, windowTitle(),
+                    tr("Copy cancelled — nothing was written."));
             else
                 QMessageBox::critical(this, windowTitle(),
                     tr("Could not copy the file out of the game."));
@@ -232,18 +239,17 @@ void GameFilesDialog::replaceFile() {
     const uint32_t parts = parts_;
 
     setEnabled(false);
+    // no Cancel button: injectGameFile() has no cancellation point, and a
+    // hidden progress dialog while the write continues looks like a hang
     auto* dlg = new QProgressDialog(
-        tr("Putting the new file into the game..."), tr("Cancel"),
+        tr("Putting the new file into the game..."), QString(),
         0, 100, this);
     dlg->setWindowModality(Qt::WindowModal);
     dlg->show();
-    auto cancelled = std::make_shared<std::atomic_bool>(false);
-    connect(dlg, &QProgressDialog::canceled, this, [cancelled]() {
-        cancelled->store(true);
-    });
 
+    ++busyJobs_;
     QThread* th = new usbutils::WorkerThread(
-        [this, dir, idHex, serial, parts, path, local, dlg, cancelled]() {
+        [this, dir, idHex, serial, parts, path, local, dlg]() {
         const InjectResult r = injectGameFile(
             dir.toStdString(), idHex.toStdString(), serial.toStdString(),
             parts, path.toStdString(), local.toStdString(),
@@ -256,6 +262,7 @@ void GameFilesDialog::replaceFile() {
                 }, Qt::QueuedConnection);
             });
         QMetaObject::invokeMethod(this, [this, r, dlg]() {
+            --busyJobs_;
             dlg->hide();
             dlg->deleteLater();
             setEnabled(true);
@@ -270,4 +277,26 @@ void GameFilesDialog::replaceFile() {
         }, Qt::QueuedConnection);
     });
     th->start();
+}
+
+void GameFilesDialog::closeEvent(QCloseEvent* ev) {
+    if (busyJobs_ > 0) {
+        QMessageBox::information(this, windowTitle(),
+            tr("Please wait — an operation is still running."));
+        ev->ignore();
+        return;
+    }
+    QDialog::closeEvent(ev);
+}
+
+// Esc and the Close button call reject() directly (not through
+// closeEvent()) — without this override the stack-allocated dialog could
+// be destroyed while a load/extract/replace worker still posts events to it.
+void GameFilesDialog::reject() {
+    if (busyJobs_ > 0) {
+        QMessageBox::information(this, windowTitle(),
+            tr("Please wait — an operation is still running."));
+        return;
+    }
+    QDialog::reject();
 }

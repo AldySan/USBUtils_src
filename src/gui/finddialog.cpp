@@ -92,6 +92,15 @@ void FindDialog::buildUi() {
 
 void FindDialog::search() {
     const std::string pattern = pattern_->text().trimmed().toStdString();
+    if (pattern.empty()) {
+        QMessageBox::information(this, tr("Find a file"),
+            tr("Enter what to look for first — an empty pattern would match "
+               "every file of every game."));
+        return;
+    }
+    // the optional size filter was advertised but never read before
+    bool sizeOk = false;
+    const uint64_t sizeFilter = size_->text().trimmed().toULongLong(&sizeOk);
 
     // busy feedback while walking the games
     setEnabled(false);
@@ -105,9 +114,12 @@ void FindDialog::search() {
     cfg.records = records_;
     const QString dir = dir_;
 
-    QThread* th = new usbutils::WorkerThread([this, dir, cfg, pattern, dlg]() {
-        const auto hits = findFileInGames(dir.toStdString(), cfg, pattern, 0);
+    ++busyJobs_;
+    QThread* th = new usbutils::WorkerThread([this, dir, cfg, pattern, sizeFilter, sizeOk, dlg]() {
+        const auto hits = findFileInGames(dir.toStdString(), cfg, pattern,
+                                          sizeOk ? sizeFilter : 0);
         QMetaObject::invokeMethod(this, [this, hits, dlg]() {
+            --busyJobs_;
             hits_ = hits;
             table_->clearContents();
             table_->setRowCount(static_cast<int>(hits_.size()));
@@ -161,6 +173,7 @@ void FindDialog::extractSelected() {
         cancelled->store(true);
     });
 
+    ++busyJobs_;
     QThread* th = new usbutils::WorkerThread(
         [this, dir, idHex, serial, parts, entry, out, dlg, cancelled]() {
         const bool ok = extractGameFile(dir.toStdString(), idHex, serial,
@@ -173,17 +186,43 @@ void FindDialog::extractSelected() {
                     1 << 30, qint64(done >> 10))));
             }, Qt::QueuedConnection);
         }, [cancelled]() { return cancelled->load(); });
-        QMetaObject::invokeMethod(this, [this, ok, out, dlg]() {
+        QMetaObject::invokeMethod(this, [this, ok, out, dlg, cancelled]() {
+            --busyJobs_;
             dlg->hide();
             dlg->deleteLater();
             setEnabled(true);
             if (ok)
                 QMessageBox::information(this, tr("Find a file"),
                     tr("Saved a copy to:\n%1").arg(out));
+            else if (cancelled->load())
+                QMessageBox::information(this, tr("Find a file"),
+                    tr("Copy cancelled — nothing was written."));
             else
                 QMessageBox::critical(this, tr("Find a file"),
                     tr("Could not copy the file out of the game."));
         }, Qt::QueuedConnection);
     });
     th->start();
+}
+
+void FindDialog::closeEvent(QCloseEvent* ev) {
+    if (busyJobs_ > 0) {
+        QMessageBox::information(this, tr("Find a file"),
+            tr("Please wait — an operation is still running."));
+        ev->ignore();
+        return;
+    }
+    QDialog::closeEvent(ev);
+}
+
+// Esc and the Close button call reject() directly (not through
+// closeEvent()) — without this override the stack-allocated dialog could
+// be destroyed while a search/extract worker still posts events to it.
+void FindDialog::reject() {
+    if (busyJobs_ > 0) {
+        QMessageBox::information(this, tr("Find a file"),
+            tr("Please wait — an operation is still running."));
+        return;
+    }
+    QDialog::reject();
 }
