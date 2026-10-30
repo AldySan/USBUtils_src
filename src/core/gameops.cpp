@@ -347,10 +347,15 @@ CopyResult copyGame(const std::string& srcDir, UlCfg& srcCfg, size_t index,
         if (!fs::exists(from)) {
             res.error = "missing chunk file: " + name +
                         " (run a structure check first)";
+            for (const std::string& w : written) std::remove(w.c_str());
             return res;
         }
         done = copyFile(from, to, done, total, progress, cancelled, res.error);
         if (done == UINT64_MAX) {
+            // roll back every chunk written so far: half-copied games would
+            // otherwise sit on the destination as unreferenced "obsolete"
+            // files until Restore-space finds them
+            for (const std::string& w : written) std::remove(w.c_str());
             std::remove(to.c_str());
             return res;
         }
@@ -367,6 +372,7 @@ CopyResult copyGame(const std::string& srcDir, UlCfg& srcCfg, size_t index,
         const uint64_t sc = copyFile(sidecarFrom, sidecarTo, done, total,
                                      progress, cancelled, res.error);
         if (sc == UINT64_MAX) {
+            for (const std::string& w : written) std::remove(w.c_str());
             std::remove(sidecarTo.c_str());
             return res;
         }
@@ -381,6 +387,7 @@ CopyResult copyGame(const std::string& srcDir, UlCfg& srcCfg, size_t index,
         dest.load(destDir);
         if (!dest.append(r)) {
             res.error = "cannot write ul.cfg on the destination drive";
+            for (const std::string& w : written) std::remove(w.c_str());
             return res;
         }
     }

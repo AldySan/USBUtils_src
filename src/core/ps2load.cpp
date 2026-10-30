@@ -88,6 +88,10 @@ bool readRootDir(GameStream& gs, uint32_t& lba, uint32_t& sectors) {
     if (std::memcmp(pvd + 1, "CD001", 5) != 0)
         return false;                                   // not ISO9660
     const uint32_t rootSize = rd32(pvd + 166);
+    // Hostile-image guard (same 8 MiB cap as walkIso): a lied-about root
+    // size would otherwise size the dirArea vector at up to 4 GiB before
+    // any read fails. Real PS2 root directories are a few sectors.
+    if (rootSize == 0 || rootSize > 8u * 1024 * 1024) return false;
     lba      = rd32(pvd + 158);
     sectors  = static_cast<uint32_t>((rootSize + kSectorSize - 1) / kSectorSize);
     return lba != 0 && sectors != 0;

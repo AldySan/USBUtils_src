@@ -68,6 +68,21 @@ bool loadSidecar(const std::string& path, Sidecar& out) {
     const bool ok = std::fread(&hdr, sizeof(hdr), 1, f) == 1
         && std::memcmp(hdr.magic, kSidecarMagic, sizeof(kSidecarMagic)) == 0;
     if (ok) {
+        // Clamp the entry count by what the file can actually hold: the
+        // header count is untrusted (a corrupt/hostile .rip would otherwise
+        // size the vector at count*16 bytes — up to 64 GiB — before any
+        // read happens).
+        uint64_t maxEntries = 0;
+        if (usbutils::seek64(f, 0, SEEK_END)) {
+            const int64_t fsz = usbutils::tell64(f);
+            if (fsz >= static_cast<int64_t>(sizeof(SidecarHeader)))
+                maxEntries = static_cast<uint64_t>(fsz - sizeof(SidecarHeader))
+                             / sizeof(SidecarEntryRec);
+            if (usbutils::seek64(f, static_cast<int64_t>(sizeof(SidecarHeader)))) {
+                // no-op reposition; keeps the read loop below meaningful
+            }
+        }
+        if (hdr.count > maxEntries) hdr.count = static_cast<uint32_t>(maxEntries);
         out.entries.resize(hdr.count);
         for (uint32_t i = 0; i < hdr.count; ++i) {
             SidecarEntryRec rec{};

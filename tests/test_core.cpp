@@ -480,6 +480,30 @@ static void testVideoRip() {
         CHECK(filesEqual(iso, base / "back.iso"));
     }
 
+    // ---- hostile sidecar: a lied-about entry count must not OOM ----------
+    // (header claims 0xFFFFFFFF entries; the loader must clamp the vector
+    // by the real file size instead of resizing to count*16 bytes)
+    {
+        const fs::path rip = base / (chunkFileName(id, serial, 0) + ".rip");
+        {
+            FILE* f = std::fopen(rip.string().c_str(), "wb");
+            CHECK(f != nullptr);
+            if (f) {
+                const unsigned char hostile[12] = {
+                    'U','S','R','R','I','P','0','1',
+                    0xFF, 0xFF, 0xFF, 0xFF };
+                std::fwrite(hostile, 1, sizeof(hostile), f);
+                std::fclose(f);
+            }
+        }
+        std::string err2;
+        const auto v2 = scanVideos(base.string(), id, serial, 1, &err2);
+        CHECK(err2.empty());          // unusable sidecar is ignored, not fatal
+        CHECK(v2.size() == 1);
+        CHECK(!v2[0].hasBackup);      // clamped to zero entries
+        fs::remove(rip);
+    }
+
     fs::remove_all(base);
 }
 
