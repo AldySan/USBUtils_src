@@ -8,6 +8,7 @@
 #include "ps2load.h"
 
 #include "gamestream.h"
+#include "port.h"
 
 #include <cstdio>
 #include <cstring>
@@ -139,8 +140,10 @@ std::string parseBootElf(const std::string& cnf) {
 bool loadFile(const std::string& path, std::vector<uint8_t>& out) {
     FILE* f = std::fopen(path.c_str(), "rb");
     if (!f) return false;
-    std::fseek(f, 0, SEEK_END);
-    const long sz = std::ftell(f);
+    // seek64/tell64: plain ftell() returns a 32-bit long on Windows and
+    // mis-reports any file over 2 GiB.
+    if (!usbutils::seek64(f, 0, SEEK_END)) { std::fclose(f); return false; }
+    const int64_t sz = usbutils::tell64(f);
     std::rewind(f);
     if (sz <= 0) { std::fclose(f); return false; }
     out.resize(static_cast<size_t>(sz));

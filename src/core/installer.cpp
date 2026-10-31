@@ -134,6 +134,7 @@ InstallResult installIso(const std::string& isoPath, const std::string& dir,
     }
 
     res.ok = true;
+    res.name = name;
     res.idHex = idHex;
     res.serial = serial;
     res.parts = parts;

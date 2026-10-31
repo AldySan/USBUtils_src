@@ -220,7 +220,8 @@ IsoInfo readIsoInfo(const std::string& path) {
     if (std::memcmp(pvd + 1, "CD001", 5) != 0) return info;   // not ISO9660
 
     info.volumeSize = static_cast<uint32_t>(pvd[80] | (pvd[81] << 8) |
-                       (pvd[82] << 16) | (pvd[83] << 24));
+                       (pvd[82] << 16) |
+                       (static_cast<uint32_t>(pvd[83]) << 24));
     info.volumeId.assign(reinterpret_cast<char*>(pvd + 40), 32);
     while (!info.volumeId.empty() &&
            (info.volumeId.back() == ' ' || info.volumeId.back() == '\0'))
