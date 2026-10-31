@@ -33,6 +33,8 @@ struct InstallOptions {
 struct InstallResult {
     bool        ok = false;
     std::string error;
+    std::string name;            ///< the name actually recorded (gameName,
+                                 ///< volume id or serial — in that priority)
     std::string idHex;
     std::string serial;
     uint32_t    parts = 0;

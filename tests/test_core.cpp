@@ -1069,6 +1069,100 @@ static void testIsoEdit() {
 }
 
 // ---------------------------------------------------------------------------
+// IsoImageDoc — multi-extent (>4 GiB) file records must merge into ONE node
+// in both on-disk forms: the ECMA-119 form (0x80 on every record except the
+// last) and the legacy form our own pre-0.0.7 writer produced (0x80 on every
+// record including the last).
+// ---------------------------------------------------------------------------
+static void testIsoEditMultiExtent() {
+    namespace fs = std::filesystem;
+    const uint32_t sector = 2048;
+
+    for (int form = 0; form < 2; ++form) {
+        const bool legacyLastFlag = (form == 1);   // last record also 0x80
+        const fs::path base =
+            fs::temp_directory_path() / "usbutils_multiext";
+        fs::create_directories(base);
+        const fs::path src = base / "multi.iso";
+
+        // image skeleton: PVD + root dir + two data extents at LBA 20/21
+        std::vector<uint8_t> img(16 * sector, 0);
+        uint8_t pvd[sector] = {};
+        pvd[0] = 1;
+        std::memcpy(pvd + 1, "CD001", 5);
+        pvd[6] = 1;
+        std::memset(pvd + 40, ' ', 32);
+        std::memcpy(pvd + 40, "MULTIEXT", 8);
+        const uint32_t totalSectors = 24;
+        pvd[80] = totalSectors & 0xFF;
+        pvd[81] = (totalSectors >> 8) & 0xFF;
+        pvd[82] = (totalSectors >> 16) & 0xFF;
+        pvd[83] = (totalSectors >> 24) & 0xFF;
+        uint8_t* root = pvd + 156;
+        root[0] = 34; root[1] = 0;
+        const uint32_t rootLba = 18, rootSize = sector;
+        std::memcpy(root + 2, &rootLba, 4);
+        std::memcpy(root + 10, &rootSize, 4);
+        root[18] = 120;
+        root[25] = 2;
+        root[28] = 1; root[30] = 1;
+        root[32] = 1;
+        img.insert(img.end(), pvd, pvd + sector);
+        img.resize(18 * sector, 0);
+
+        // root directory: "." / ".." + BIG.BIN;1 split over two sections
+        std::vector<uint8_t> dir(sector, 0);
+        size_t off = 0;
+        off += putDirRecord(dir, off, rootLba, rootSize, 2, std::string(1, '\0'));
+        off += putDirRecord(dir, off, rootLba, rootSize, 2, std::string(1, '\1'));
+        off += putDirRecord(dir, off, 20, sector, 0x80, "BIG.BIN;1");
+        off += putDirRecord(dir, off, 21, 2 * sector,
+                            legacyLastFlag ? 0x80 : 0x00, "BIG.BIN;1");
+        img.insert(img.end(), dir.begin(), dir.end());
+        img.resize(20 * sector, 0);
+
+        // extent payloads with distinct patterns
+        for (uint32_t i = 0; i < sector; ++i)
+            img.push_back(static_cast<uint8_t>(i & 0xFF));           // LBA 20
+        for (uint32_t i = 0; i < 2 * sector; ++i)
+            img.push_back(static_cast<uint8_t>((i * 3 + 1) & 0xFF)); // LBA 21
+
+        {
+            FILE* f = std::fopen(src.string().c_str(), "wb");
+            std::fwrite(img.data(), 1, img.size(), f);
+            std::fclose(f);
+        }
+
+        IsoImageDoc doc;
+        CHECK(doc.open(src.string()));
+        CHECK(doc.root()->children.size() == 1);   // ONE node, not two
+        if (doc.root()->children.size() == 1) {
+            const IsoNode* big = doc.root()->children[0].get();
+            CHECK(big->name == "BIG.BIN");
+            CHECK(big->size() == 3 * sector);      // both sections merged
+            CHECK(big->runs.size() == 2);
+            CHECK(!big->isExternal());
+
+            // extract and verify the content spans both extents in order
+            const fs::path out = base / "big.out";
+            CHECK(doc.extractTo(big, out.string()));
+            FILE* f = std::fopen(out.string().c_str(), "rb");
+            CHECK(f);
+            if (f) {
+                bool match = true;
+                for (uint32_t i = 0; i < sector; ++i)
+                    if (std::fgetc(f) != int(i & 0xFF)) { match = false; break; }
+                for (uint32_t i = 0; i < 2 * sector; ++i)
+                    if (std::fgetc(f) != int((i * 3 + 1) & 0xFF)) { match = false; break; }
+                std::fclose(f);
+                CHECK(match);
+            }
+        }
+        fs::remove_all(base);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // support-file registry ("Useful acquired")
 // ---------------------------------------------------------------------------
 static void testSupportFiles() {
@@ -1127,6 +1221,7 @@ int main() {
     testSortAndClean();
     testVersionCompare();
     testIsoEdit();
+    testIsoEditMultiExtent();
     testSupportFiles();
     std::printf(g_failed ? "\n%d FAILURE(S)\n" : "\nALL TESTS PASSED\n", g_failed);
     return g_failed ? 1 : 0;

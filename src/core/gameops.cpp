@@ -429,7 +429,9 @@ std::vector<SerialFix> fixBrokenSerials(const std::string& dir, UlCfg& cfg,
             walkIso([&gs](uint64_t off, void* dst, size_t n) {
                 return gs.read(off, dst, n) == n;
             }, [&gs, &cnf](const IsoEntry& e) {
-                if (!e.isDir && e.name == "SYSTEM.CNF") {
+                // case-insensitive like readIsoInfo()/probeOpticalDrive() —
+                // some non-standard rips store a lower-case entry name
+                if (!e.isDir && toLowerAscii(e.name) == "system.cnf") {
                     const size_t want =
                         static_cast<size_t>(std::min<uint64_t>(e.size, 512));
                     cnf.assign(want, '\0');

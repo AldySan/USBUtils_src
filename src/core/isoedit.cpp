@@ -71,6 +71,10 @@ void putDate7(uint8_t d[7]) {
 /// identifier ("SLUS_202.65;1", "." = single 0x00 byte, ".." = 0x01).
 void putRecord(std::vector<uint8_t>& out, const char* ident, size_t nameLen,
                uint32_t lba, uint32_t size, uint8_t flags) {
+    // The record length is a single byte: 33 + identifier (+ pad) must stay
+    // <= 255. Identifiers that long only come from hostile images (a real
+    // Level-1/2 name is <= 30 chars); clamp so the record stays well-formed.
+    if (nameLen > 222) nameLen = 222;
     DirRecordHeader h;
     std::memset(&h, 0, sizeof(h));
     h.lbaLE = lba;      h.lbaBE = bswap32(lba);
@@ -229,6 +233,12 @@ bool IsoImageDoc::open(const std::string& path) {
         if (!read(uint64_t(cur.lba) * kSector, dir.data(), dir.size()))
             continue;
 
+        // file-section flags of the record parsed just before the current
+        // one in THIS directory extent (0 when none / it was a directory) —
+        // per ECMA-119 a multi-extent file's LAST record clears the 0x80
+        // bit, so "the previous record had 0x80" is what marks the current
+        // record as a continuation, not the current record's own bit.
+        uint8_t prevRecordFlags = 0;
         for (size_t off = 0; off + 1 < dir.size();) {
             const uint8_t recLen = dir[off];
             if (recLen == 0) {
@@ -259,7 +269,6 @@ bool IsoImageDoc::open(const std::string& path) {
                                  (uint32_t(dir[recOff + 13]) << 24);
             const uint8_t flags = dir[recOff + 25];
             const bool isDir = (flags & 0x02) != 0;
-            const bool multiExtent = (flags & 0x80) != 0;
 
             std::string disp = ident;
             const size_t semi = disp.find(';');
@@ -273,21 +282,26 @@ bool IsoImageDoc::open(const std::string& path) {
                 node->fromSource = true;
                 IsoNode* raw = node.get();
                 cur.parent->children.push_back(std::move(node));
+                prevRecordFlags = 0;
 
                 bool seen = false;
                 for (uint32_t v : visited) if (v == lba) { seen = true; break; }
                 if (!seen && lba != cur.lba)
                     stack.push_back({lba, esz, raw});
             } else {
-                // merge multi-extent continuation records (same identifier
-                // as the last file entry of this directory)
+                // merge multi-extent continuation records: same identifier
+                // as the last file entry of this directory AND that previous
+                // record carried the 0x80 bit. This also tolerates images
+                // (our own pre-0.0.7 writer) that set 0x80 on every record
+                // of the file, including the last.
                 IsoNode* prev = nullptr;
                 if (!cur.parent->children.empty()) {
                     IsoNode* cand = cur.parent->children.back().get();
                     if (!cand->isDir && cand->isoName == ident && !cand->isExternal())
                         prev = cand;
                 }
-                if (prev && multiExtent) {
+                const bool continuesPrev = prev && (prevRecordFlags & 0x80);
+                if (continuesPrev) {
                     prev->runs.push_back({srcPath_,
                                           uint64_t(lba) * kSector, esz});
                 } else {
@@ -300,6 +314,7 @@ bool IsoImageDoc::open(const std::string& path) {
                                           uint64_t(lba) * kSector, esz});
                     cur.parent->children.push_back(std::move(node));
                 }
+                prevRecordFlags = flags;
             }
         }
     }
@@ -778,8 +793,10 @@ bool IsoImageDoc::saveAs(const std::string& outPath,
                             ? mine[mineIdx] : nullptr;
                         ++mineIdx;
                         if (!fe) { ok = false; break; }
+                        // ECMA-119 multi-extent: every section's record sets
+                        // 0x80 EXCEPT the last one of the file
                         const uint8_t flags =
-                            uint8_t((nExt > 1) ? 0x80 : 0x00);
+                            uint8_t((e + 1 < nExt) ? 0x80 : 0x00);
                         putRecord(body, nm.c_str(), nm.size(), fe->lba,
                                   uint32_t(fe->bytes), flags);
                     }

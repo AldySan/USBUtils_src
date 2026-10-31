@@ -38,7 +38,7 @@ std::vector<OrphanGame> findOrphans(const std::string& dir) {
             std::fclose(f);
         }
         og.partsFound = i;
-        if (i == 0) continue;   // first chunk only — still offer recovery
+        if (i == 0) continue;   // ".00" itself unreadable — nothing to recover
 
         // Suggest a name: recovery db first, then the game db by serial.
         // (The original consults usbutil.rcn — "Archivo de recuperacion".)
