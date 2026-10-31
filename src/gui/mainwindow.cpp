@@ -1309,6 +1309,11 @@ void MainWindow::driveReport() {
     UlCfg cfg = *cfg_;
 
     setEnabled(false);
+    // count into busyJobs_ like runJob() does: closeEvent() must refuse to
+    // destroy the window while the report worker still posts its queued
+    // result into it (the same use-after-free window PR #17 closed for the
+    // dialogs and the update-check thread)
+    ++busyJobs_;
     auto* dlg = new QProgressDialog(tr("Preparing the drive report..."),
                                     QString(), 0, 0, this);
     dlg->setWindowModality(Qt::WindowModal);
@@ -1317,6 +1322,7 @@ void MainWindow::driveReport() {
     QThread* th = new usbutils::WorkerThread([this, dir, cfg, dlg]() {
         const std::string rep = generateReport(dir.toStdString(), cfg);
         QMetaObject::invokeMethod(this, [this, rep, dlg]() {
+            --busyJobs_;
             dlg->hide();
             dlg->deleteLater();
             setEnabled(true);
