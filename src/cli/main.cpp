@@ -249,8 +249,10 @@ static int cmdInstall(const Args& a) {
     const InstallResult r = installIso(a.iso, a.dir, opt, makeProgress());
     std::printf("\n");
     if (!r.ok) { std::printf("ERROR: %s\n", r.error.c_str()); return 1; }
+    // r.name is the name actually recorded (gameName, volume id or serial
+    // in that priority) — opt.gameName is empty when -n was not passed
     std::printf("installed: %s\n  id=%s serial=%s parts=%u size=%s\n",
-                opt.gameName.c_str(), r.idHex.c_str(), r.serial.c_str(),
+                r.name.c_str(), r.idHex.c_str(), r.serial.c_str(),
                 r.parts, humanSize(r.totalBytes).c_str());
     return 0;
 }
