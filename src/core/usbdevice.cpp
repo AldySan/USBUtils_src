@@ -184,12 +184,15 @@ bool probeOpticalDrive(const std::string& devicePath, OpticalDrive* out) {
             std::string low;
             for (char c : e.name) low += char((c >= 'A' && c <= 'Z') ? c + 32 : c);
             if (low == "system.cnf") {
-                char cnf[256] = {};
+                // Read the WHOLE sector: raw Windows device handles require
+                // sector-multiple read lengths, and the CNF text is just a
+                // prefix of it (the code's own "2048-aligned reads" rule).
+                char sec[2048];
                 const size_t n = e.size < 255 ? size_t(e.size) : 255;
-                if (read(uint64_t(e.lba) * 2048ull, cnf, n)) {
+                if (read(uint64_t(e.lba) * 2048ull, sec, sizeof(sec))) {
                     out->isPs2 = true;
                     out->serial = usbutils::normalizeSerial(
-                        usbutils::bootElfFromCnf(std::string(cnf, n)));
+                        usbutils::bootElfFromCnf(std::string(sec, n)));
                 }
                 return false;
             }

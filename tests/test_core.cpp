@@ -595,10 +595,14 @@ static void testPs2Load() {
         CHECK(found["SCEE_DD"].lba < info.rootDirLba);   // tool marker
         CHECK(found["SCEE_DD"].size == 0x158);
     }
-    if (found.count("MSYSTEM.CNF"))
+    if (found.count("MSYSTEM.CNF")) {
         CHECK(found["MSYSTEM.CNF"].size == 2048);       // sector snapshot
+        CHECK(!found["MSYSTEM.CNF"].isDir);            // file record (flags @25)
+    }
     if (found.count("PS2L_202.65.65")) {
         const IsoEntry& e = found["PS2L_202.65.65"];
+        CHECK(!e.isDir);       // the boot ELF is a FILE — a directory flag on
+                                // it would make the game unbootable
         CHECK(e.size == elf.size());
         std::vector<uint8_t> got(elf.size());
         CHECK(gs.read(e.lba * 2048ull, got.data(), got.size()) == got.size());
@@ -646,6 +650,41 @@ static void testPs2Load() {
     CHECK(exportIso(base.string(), cfg.records[0],
                     (base / "back.iso").string()));
     CHECK(filesEqual(iso, base / "back.iso"));
+
+    // ---- regression: boot name with a 14-byte PS2L record -----------------
+    // "PS2L_123.4.4;1" is 14 bytes long — 14 & 0x02 != 0. The record
+    // writer used to put the NAME LENGTH into the ECMA-119 flags byte, so
+    // this (very common) name length marked the boot ELF as a DIRECTORY
+    // and the injected game would not boot. The first scenario above
+    // ("...;1" = 16 bytes) was accidentally immune: 16 & 0x02 == 0.
+    {
+        const fs::path iso2 = base / "game2.iso";
+        writeTestIso(iso2, "SLUS_123.4", 2048);
+        InstallOptions o2;
+        o2.gameName = "Ps2l Two";
+        const InstallResult ir2 = installIso(iso2.string(), base.string(), o2);
+        CHECK(ir2.ok);
+        if (ir2.ok) {
+            const Ps2LoadResult r2 = injectPs2Load(
+                base.string(), ir2.idHex, "SLUS_123.40", 1, loader.string());
+            CHECK(r2.ok);
+            CHECK(r2.ps2lName == "PS2L_123.4.4");
+            if (r2.ok) {
+                GameStream gs2;
+                CHECK(gs2.open(base.string(), ir2.idHex, "SLUS_123.40", 1));
+                std::map<std::string, IsoEntry> found2;
+                walkIso([&gs2](uint64_t off, void* dst, size_t n) {
+                    return gs2.read(off, dst, n) == n;
+                }, [&](const IsoEntry& e) {
+                    found2[e.name] = e;
+                    return true;
+                });
+                CHECK(found2.count("PS2L_123.4.4") == 1);
+                if (found2.count("PS2L_123.4.4"))
+                    CHECK(!found2["PS2L_123.4.4"].isDir);  // boot ELF = FILE
+            }
+        }
+    }
 
     fs::remove_all(base);
 }
@@ -945,6 +984,36 @@ static void testIsoEdit() {
     fs::create_directories(base);
     const fs::path src = base / "src.iso";
     writeTestIso(src, "SLUS_202.65", 2048 * 2);
+
+    // ---- hostile input: a 222-byte identifier must be dropped ------------
+    // It passes the reader-side "fits in recLen" check, but the writer
+    // cannot round-trip it (33+222+1 = 256 overflows the 1-byte record
+    // length) — keeping it would emit a len=0 record on save.
+    {
+        const fs::path hostile = base / "hostile.iso";
+        writeTestIso(hostile, "SLUS_202.65", 2048, /*withExtras*/ false);
+        FILE* f = std::fopen(hostile.string().c_str(), "r+b");
+        CHECK(f);
+        if (f) {
+            std::vector<uint8_t> rec(255, 0);
+            rec[0]  = 255;                        // record length
+            rec[32] = 222;                        // identifier length
+            std::memset(rec.data() + 33, 'A', 222);
+            // root records end at 34 + 34 + 46 = 114 in sector 18
+            std::fseek(f, static_cast<long>(18ull * 2048 + 114), SEEK_SET);
+            CHECK(std::fwrite(rec.data(), 1, rec.size(), f) == rec.size());
+            std::fclose(f);
+        }
+        IsoImageDoc hdoc;
+        CHECK(hdoc.open(hostile.string()));
+        size_t longNames = 0, cnfSeen = 0;
+        hdoc.forEachNode([&](const IsoNode* n, int) {
+            if (n->name.find("AAAA") != std::string::npos) ++longNames;
+            if (n->name == "SYSTEM.CNF") ++cnfSeen;
+        });
+        CHECK(longNames == 0);                   // the 222-byte name is gone
+        CHECK(cnfSeen == 1);                     // the rest of the tree stays
+    }
 
     IsoImageDoc doc;
     CHECK(doc.open(src.string()));
