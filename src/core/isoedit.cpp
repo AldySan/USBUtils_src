@@ -72,9 +72,12 @@ void putDate7(uint8_t d[7]) {
 void putRecord(std::vector<uint8_t>& out, const char* ident, size_t nameLen,
                uint32_t lba, uint32_t size, uint8_t flags) {
     // The record length is a single byte: 33 + identifier (+ pad) must stay
-    // <= 255. Identifiers that long only come from hostile images (a real
-    // Level-1/2 name is <= 30 chars); clamp so the record stays well-formed.
-    if (nameLen > 222) nameLen = 222;
+    // <= 255, so the largest SAFE identifier is 221 bytes (33+221 = 254,
+    // odd — no pad). Identifiers that long only come from hostile images
+    // (a real Level-1/2 name is <= 30 chars); clamp so the record stays
+    // well-formed. (open() additionally rejects 222-byte identifiers —
+    // 33+222+1 = 256 would wrap the length byte to 0 — see the guard there.)
+    if (nameLen > 221) nameLen = 221;
     DirRecordHeader h;
     std::memset(&h, 0, sizeof(h));
     h.lbaLE = lba;      h.lbaBE = bswap32(lba);
@@ -254,7 +257,15 @@ bool IsoImageDoc::open(const std::string& path) {
             // buffer.
             if (recLen < 34) continue;
             const uint8_t nameLen = dir[recOff + 32];
-            if (size_t(nameLen) + 33 > recLen) continue;
+            // The writer must also be able to round-trip the record: a
+            // 222-byte identifier passes the fits-in-recLen check above but
+            // needs a 33+222+1 = 256-byte record, which wraps the 1-byte
+            // record length to 0 (the putRecord clamp alone would emit a
+            // corrupt len=0 record AND a name that no longer matches the
+            // path table). Drop such records instead — the rest of the
+            // tree stays loadable and a re-saved image stays valid.
+            if (size_t(nameLen) + 33 > recLen || recordSizeFor(nameLen) > 255)
+                continue;
             if (nameLen == 1 && dir[recOff + 33] < 2) continue;   // "." / ".."
 
             std::string ident(reinterpret_cast<const char*>(&dir[recOff + 33]),
