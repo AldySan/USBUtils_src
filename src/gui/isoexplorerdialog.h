@@ -57,6 +57,7 @@ private:
     const IsoNode* nodeForIndex(const QModelIndex& index) const;
     void updateInfoLine();
     void closeEvent(QCloseEvent* ev) override;
+    void reject() override;   // Esc must respect the busy guard too
 
     std::unique_ptr<usbutils::IsoImageDoc> doc_;
     QTreeView*          tree_ = nullptr;
@@ -68,4 +69,5 @@ private:
     QPushButton*        btnNewFolder_ = nullptr;
     QPushButton*        btnSave_ = nullptr;
     bool                dirty_ = false;
+    int                 busyJobs_ = 0;   // workers running (extract / save-as)
 };
