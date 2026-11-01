@@ -161,7 +161,7 @@ size_t putRecord(std::vector<uint8_t>& dir, size_t off, uint32_t lba,
                  uint32_t size, uint8_t flags, const std::string& name) {
     size_t len = 33 + name.size();
     if (len % 2) ++len;                                 // ISO9660: even
-    if (off + len > dir.size()) return 0;
+    if (off + len > dir.size() || len > 64) return 0;   // rec[] bound
     uint8_t rec[64] = {};
     rec[0]  = static_cast<uint8_t>(len);
     std::memcpy(rec + 2,  &lba, 4);
@@ -174,11 +174,11 @@ size_t putRecord(std::vector<uint8_t>& dir, size_t off, uint32_t lba,
     rec[15] = static_cast<uint8_t>(size >> 16);
     rec[16] = static_cast<uint8_t>(size >> 8);
     rec[17] = static_cast<uint8_t>(size);
-    rec[18] = flags;
-    rec[25] = static_cast<uint8_t>(name.size());
-    std::memcpy(rec + 28, "\x01\x00", 2);               // volume seq LE
+    rec[25] = flags;            // ECMA-119: flags @25 (was name length —
+                                // directory bit landed on file records!)
+    rec[28] = 1; rec[29] = 0;   // volume seq LE
     rec[30] = 0x00; rec[31] = 0x01;                     // volume seq BE
-    rec[32] = static_cast<uint8_t>(name.size());
+    rec[32] = static_cast<uint8_t>(name.size());        // name length @32
     std::memcpy(rec + 33, name.data(), name.size());
     std::memset(dir.data() + off, 0, len);
     std::memcpy(dir.data() + off, rec, len);

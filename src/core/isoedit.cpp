@@ -244,7 +244,13 @@ bool IsoImageDoc::open(const std::string& path) {
             // buffer.
             if (recLen < 34) continue;
             const uint8_t nameLen = dir[recOff + 32];
-            if (size_t(nameLen) + 33 > recLen) continue;
+            // The writer must also be able to round-trip the record: an
+            // identifier of 222 bytes passes the fits-in-recLen check but
+            // needs a 33+222+1 = 256-byte record, which overflows the
+            // 1-byte record length field (it would wrap to 0 and corrupt
+            // any image re-saved from this one).
+            if (size_t(nameLen) + 33 > recLen || recordSizeFor(nameLen) > 255)
+                continue;
             if (nameLen == 1 && dir[recOff + 33] < 2) continue;   // "." / ".."
 
             std::string ident(reinterpret_cast<const char*>(&dir[recOff + 33]),
