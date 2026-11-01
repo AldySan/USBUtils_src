@@ -96,17 +96,38 @@ void VideoRipDialog::buildUi() {
 }
 
 void VideoRipDialog::rescan() {
-    std::string err;
-    videos_ = scanVideos(dir_.toStdString(), idHex_.toStdString(),
-                         serial_.toStdString(), parts_, &err);
-    fillTable();
-    updateInfo();
+    // scanVideos() walks the game's whole ISO tree with one fopen per read
+    // on the USB drive — seconds on big games. Run it off the GUI thread
+    // (same pattern as GameFilesDialog::loadFiles) so the dialog stays
+    // responsive; closeEvent()/reject() already guard the busyJobs_ window.
+    auto* dlg = new QProgressDialog(
+        tr("Scanning the videos of \"%1\"...").arg(gameName_),
+        QString(), 0, 0, this);
+    dlg->setWindowModality(Qt::WindowModal);
+    dlg->show();
 
-    if (!err.empty()) {
-        QMessageBox::warning(this, tr("Videos"),
-            tr("Could not read this game: %1")
-                .arg(QString::fromStdString(err)));
-    }
+    const QString dir = dir_, idHex = idHex_, serial = serial_;
+    const uint32_t parts = parts_;
+
+    ++busyJobs_;
+    QThread* th = new usbutils::WorkerThread([this, dir, idHex, serial, parts, dlg]() {
+        std::string err;
+        const auto vids = scanVideos(dir.toStdString(), idHex.toStdString(),
+                                     serial.toStdString(), parts, &err);
+        QMetaObject::invokeMethod(this, [this, vids, err, dlg]() {
+            --busyJobs_;
+            videos_ = vids;
+            fillTable();
+            updateInfo();
+            dlg->hide();
+            dlg->deleteLater();
+            if (!err.empty())
+                QMessageBox::warning(this, tr("Videos"),
+                    tr("Could not read this game: %1")
+                        .arg(QString::fromStdString(err)));
+        }, Qt::QueuedConnection);
+    });
+    th->start();
 }
 
 void VideoRipDialog::fillTable() {

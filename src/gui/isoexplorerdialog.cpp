@@ -14,6 +14,7 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QMessageBox>
+#include <QProgressDialog>
 #include <QPushButton>
 #include <QStatusBar>
 #include <QTimer>
@@ -21,6 +22,8 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QStandardItemModel>
+
+#include "workerthread.h"
 
 #include <algorithm>
 #include <functional>
@@ -435,15 +438,36 @@ void IsoExplorerDialog::extractSelected() {
         QString::fromStdString(target->name), tr("All files (*)"));
     if (out.isEmpty()) return;
 
-    if (!doc_->extractTo(target, out.toStdString())) {
-        QMessageBox::warning(this, tr("USBUtils"),
-            tr("Could not save the file out."));
-    } else {
-        QMessageBox::information(this, tr("USBUtils"),
-            tr("Saved %1 (%2).")
-                .arg(QDir::toNativeSeparators(out))
-                .arg(humanSize(target->size())));
-    }
+    // Videos and other assets run into hundreds of MB — stream the copy on
+    // a worker thread so the dialog stays responsive instead of freezing.
+    setEnabled(false);
+    auto* dlg = new QProgressDialog(
+        tr("Saving \"%1\" out of the image...")
+            .arg(QString::fromStdString(target->name)),
+        QString(), 0, 0, this);
+    dlg->setWindowModality(Qt::WindowModal);
+    dlg->show();
+
+    ++busyJobs_;
+    QThread* th = new usbutils::WorkerThread([this, target, out, dlg]() {
+        const bool ok = doc_->extractTo(target, out.toStdString());
+        QMetaObject::invokeMethod(this, [this, ok, out, target, dlg]() {
+            --busyJobs_;
+            dlg->hide();
+            dlg->deleteLater();
+            setEnabled(true);
+            if (!ok) {
+                QMessageBox::warning(this, tr("USBUtils"),
+                    tr("Could not save the file out."));
+            } else {
+                QMessageBox::information(this, tr("USBUtils"),
+                    tr("Saved %1 (%2).")
+                        .arg(QDir::toNativeSeparators(out))
+                        .arg(humanSize(target->size())));
+            }
+        }, Qt::QueuedConnection);
+    });
+    th->start();
 }
 
 // ---------------------------------------------------------------------------
@@ -459,22 +483,46 @@ void IsoExplorerDialog::saveImageAs() {
         tr("ISO images (*.iso);;All files (*)"));
     if (out.isEmpty()) return;
 
-    // a long write — show the busy cursor at least (images are DVD-sized)
+    // DVD-sized write — stream it on a worker thread with a progress bar.
+    // On the GUI thread the app would be "Not Responding" for minutes and
+    // a force-kill would leave a truncated .iso that looks complete.
     setEnabled(false);
-    QApplication::setOverrideCursor(Qt::WaitCursor);
-    std::string err;
-    const bool ok = doc_->saveAs(out.toStdString(), nullptr, &err);
-    QApplication::restoreOverrideCursor();
-    setEnabled(true);
+    auto* dlg = new QProgressDialog(tr("Writing the image..."), QString(),
+                                    0, 100, this);
+    dlg->setWindowTitle(tr("USBUtils"));
+    dlg->setWindowModality(Qt::WindowModal);
+    dlg->setAutoClose(false);
+    dlg->setAutoReset(false);
+    dlg->show();
 
-    if (!ok) {
-        QMessageBox::critical(this, tr("USBUtils"),
-            tr("Saving failed: %1").arg(QString::fromStdString(err)));
-        return;
-    }
-    setDirty(false);
-    QMessageBox::information(this, tr("USBUtils"),
-        tr("Saved the image to %1.").arg(QDir::toNativeSeparators(out)));
+    ++busyJobs_;
+    QThread* th = new usbutils::WorkerThread([this, out, dlg]() {
+        std::string err;
+        const bool ok = doc_->saveAs(out.toStdString(),
+            [this, dlg](uint64_t done, uint64_t total) {
+                QMetaObject::invokeMethod(this, [dlg, done, total]() {
+                    dlg->setMaximum(static_cast<int>(std::min<qint64>(
+                        1 << 30, std::max<qint64>(1, qint64(total >> 20)))));
+                    dlg->setValue(static_cast<int>(
+                        std::min<qint64>(1 << 30, qint64(done >> 20))));
+                }, Qt::QueuedConnection);
+            }, &err);
+        QMetaObject::invokeMethod(this, [this, ok, out, err, dlg]() {
+            --busyJobs_;
+            dlg->hide();
+            dlg->deleteLater();
+            setEnabled(true);
+            if (!ok) {
+                QMessageBox::critical(this, tr("USBUtils"),
+                    tr("Saving failed: %1").arg(QString::fromStdString(err)));
+                return;
+            }
+            setDirty(false);
+            QMessageBox::information(this, tr("USBUtils"),
+                tr("Saved the image to %1.").arg(QDir::toNativeSeparators(out)));
+        }, Qt::QueuedConnection);
+    });
+    th->start();
 }
 
 // ---------------------------------------------------------------------------
@@ -507,6 +555,12 @@ void IsoExplorerDialog::onTreeContextMenu(const QPoint& pos) {
 }
 
 void IsoExplorerDialog::closeEvent(QCloseEvent* ev) {
+    if (busyJobs_ > 0) {
+        QMessageBox::information(this, tr("USBUtils"),
+            tr("Please wait — a file operation is still running."));
+        ev->ignore();
+        return;
+    }
     if (dirty_) {
         const auto ret = QMessageBox::question(this, tr("USBUtils"),
             tr("The image has unsaved changes. Close anyway?"),
@@ -514,4 +568,16 @@ void IsoExplorerDialog::closeEvent(QCloseEvent* ev) {
         if (ret != QMessageBox::Yes) { ev->ignore(); return; }
     }
     ev->accept();
+}
+
+// Esc calls reject() directly (it does NOT go through closeEvent()), so
+// without this override the WA_DeleteOnClose dialog could be freed while
+// an extract / save-as worker still posts events to it.
+void IsoExplorerDialog::reject() {
+    if (busyJobs_ > 0) {
+        QMessageBox::information(this, tr("USBUtils"),
+            tr("Please wait — a file operation is still running."));
+        return;
+    }
+    QDialog::reject();
 }
