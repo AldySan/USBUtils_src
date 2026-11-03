@@ -4,6 +4,8 @@
 #include "gamefile.h"
 
 #include <cstdio>
+#include <utility>
+#include <vector>
 #include <algorithm>
 #include <filesystem>
 #include <system_error>
@@ -102,7 +104,8 @@ int UlCfg::removeGame(size_t index) {
     return removed;
 }
 
-bool UlCfg::renameGame(size_t index, const std::string& newName) {
+bool UlCfg::renameGame(size_t index, const std::string& newName,
+                        std::string* error) {
     if (index >= records.size()) return false;
     UlCfgRecord& r = records[index];
 
@@ -110,17 +113,42 @@ bool UlCfg::renameGame(size_t index, const std::string& newName) {
     const std::string serial  = r.serialStr();
     const std::string newId   = gameIdHex(newName);
 
+    // Renaming to a name whose id+serial matches ANOTHER record would make
+    // both games claim the same chunk files (rename would clobber them).
+    const size_t clash = findByIdSerial(newId, serial);
+    if (clash != SIZE_MAX && clash != index) {
+        if (error) *error = "another game with that name and code is "
+                            "already on this drive";
+        return false;
+    }
+
     if (oldId != newId) {
         // Rename every chunk: ul.<oldid>.<serial>.NN -> ul.<newid>.<serial>.NN
-        // (the original renames chunk files the same way, see 0x3A1308 flow).
-        if (!renameChunks(dir, oldId, newId, serial, r.parts))
+        // (the original renames chunk files the same way, see 0x3A1308 flow;
+        // renameChunks rolls back on failure so the drive never ends up
+        // half-renamed).
+        if (!renameChunks(dir, oldId, newId, serial, r.parts)) {
+            if (error) *error = "could not rename the game's files "
+                                "(missing part or write error)";
             return false;
+        }
     }
+    const std::string oldName = r.nameStr();
     r.setName(newName);
-    return save();
+    if (!save()) {
+        // ul.cfg unchanged on disk — undo the chunk renames too, or the
+        // drive would hold files under an id no record points at
+        r.setName(oldName);
+        if (oldId != newId)
+            renameChunks(dir, newId, oldId, serial, r.parts);   // best effort
+        if (error) *error = "could not write ul.cfg (drive read-only or full?)";
+        return false;
+    }
+    return true;
 }
 
-bool UlCfg::renameSerial(size_t index, const std::string& newSerial) {
+bool UlCfg::renameSerial(size_t index, const std::string& newSerial,
+                          std::string* error) {
     if (index >= records.size()) return false;
     UlCfgRecord& r = records[index];
 
@@ -128,15 +156,34 @@ bool UlCfg::renameSerial(size_t index, const std::string& newSerial) {
     const std::string oldSerial = r.serialStr();
     if (oldSerial == newSerial) return true;
 
+    // Same guard as renameGame: the new id+serial pair must stay unique,
+    // or two records would point at the same chunk files.
+    const size_t clash = findByIdSerial(idHex, newSerial);
+    if (clash != SIZE_MAX && clash != index) {
+        if (error) *error = "another game already uses code " + newSerial;
+        return false;
+    }
+
     // ul.<ID>.<old>.NN -> ul.<ID>.<new>.NN (the "rename code" part of the
     // original's "Correct code 666.66" flow — "No se pudo renombrar
-    // codigo 666.66" is the failure path).
+    // codigo 666.66" is the failure path). Rolled back on failure so a
+    // missing part cannot leave the game half-broken.
+    std::vector<std::pair<std::string, std::string>> moved;
     std::error_code ec;
     for (uint32_t i = 0; i < r.parts; ++i) {
         const std::string from = joinPath(dir, chunkFileName(idHex, oldSerial, i));
         const std::string to   = joinPath(dir, chunkFileName(idHex, newSerial, i));
         fs::rename(from, to, ec);
-        if (ec) return false;
+        if (ec) {
+            for (auto it = moved.rbegin(); it != moved.rend(); ++it) {
+                std::error_code ec2;
+                fs::rename(it->second, it->first, ec2);
+            }
+            if (error) *error = "could not rename the game's files "
+                                "(missing part or write error)";
+            return false;
+        }
+        moved.emplace_back(from, to);
     }
     // carry the video-rip sidecar along (best effort — may not exist)
     {
@@ -145,7 +192,22 @@ bool UlCfg::renameSerial(size_t index, const std::string& newSerial) {
         fs::rename(from, to, ec);   // ignore errors
     }
     r.setSerial(newSerial);
-    return save();
+    if (!save()) {
+        // ul.cfg unchanged on disk — undo the chunk renames too
+        r.setSerial(oldSerial);
+        for (auto it = moved.rbegin(); it != moved.rend(); ++it) {
+            std::error_code ec2;
+            fs::rename(it->second, it->first, ec2);
+        }
+        {
+            std::error_code ec3;
+            fs::rename(joinPath(dir, chunkFileName(idHex, newSerial, 0) + ".rip"),
+                       joinPath(dir, chunkFileName(idHex, oldSerial, 0) + ".rip"), ec3);
+        }
+        if (error) *error = "could not write ul.cfg (drive read-only or full?)";
+        return false;
+    }
+    return true;
 }
 
 size_t UlCfg::findByIdSerial(const std::string& idHex, const std::string& serial) const {

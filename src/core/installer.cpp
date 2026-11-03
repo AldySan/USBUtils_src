@@ -99,6 +99,10 @@ InstallResult installIso(const std::string& isoPath, const std::string& dir,
 
         uint64_t written = 0;
         while (written < chunkLeft) {
+            // per-buffer, not per-chunk: a 1 GiB chunk takes tens of
+            // seconds on real USB drives, and a Cancel click must not keep
+            // writing for that long
+            if (cancelled && cancelled()) { ok = false; res.error = "cancelled"; break; }
             const size_t want = static_cast<size_t>(
                 std::min<uint64_t>(buf.size(), chunkLeft - written));
             const size_t n = std::fread(buf.data(), 1, want, in);

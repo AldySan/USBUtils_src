@@ -3,6 +3,8 @@
 
 #include <cstdio>
 #include <cstring>
+#include <utility>
+#include <vector>
 #include "port.h"
 #include <algorithm>
 
@@ -119,10 +121,19 @@ int deleteChunks(const std::string& dir, const std::string& idHex,
 bool renameChunks(const std::string& dir, const std::string& oldIdHex,
                   const std::string& newIdHex, const std::string& serial,
                   uint32_t parts) {
+    // Roll back on failure: stopping halfway would leave some chunk files
+    // under the new id and the rest under the old one — a game that is
+    // broken under BOTH names (ul.cfg still points at the old id).
+    std::vector<std::pair<std::string, std::string>> moved;
     for (uint32_t i = 0; i < parts; ++i) {
         const std::string from = joinPath(dir, chunkFileName(oldIdHex, serial, i));
         const std::string to   = joinPath(dir, chunkFileName(newIdHex, serial, i));
-        if (std::rename(from.c_str(), to.c_str()) != 0) return false;
+        if (std::rename(from.c_str(), to.c_str()) != 0) {
+            for (auto it = moved.rbegin(); it != moved.rend(); ++it)
+                std::rename(it->second.c_str(), it->first.c_str());
+            return false;
+        }
+        moved.emplace_back(from, to);
     }
     return true;
 }

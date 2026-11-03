@@ -6,9 +6,11 @@
  */
 #pragma once
 
+#include <QEventLoop>
 #include <QThread>
 
 #include <functional>
+#include <memory>
 
 namespace usbutils {
 
@@ -43,5 +45,36 @@ public:
 private:
     std::function<void()> fn_;
 };
+
+/// Run `fn` on a WorkerThread and block until it finishes, keeping the
+/// GUI painting (a real QEventLoop, not a processEvents() spin, which
+/// re-enters arbitrary slots and lets users re-trigger operations
+/// mid-flight). For operations that are normally fast but can occasionally
+/// take minutes (e.g. the DNAS patch's whole-stream IOPRP fallback scan).
+///
+/// Lifetime rules that keep this safe:
+///  - `fn` is COPIED into the worker lambda (never capture the reference
+///    parameter), and the result is written through a heap-allocated
+///    shared slot — no stack references cross the thread boundary.
+///  - The WorkerThread object deletes itself via its built-in
+///    finished->deleteLater connection; the DeferredDelete is processed by
+///    the OUTER event loop after this nested loop has unwound, i.e.
+///    strictly after the worker has returned from run() — no
+///    use-after-free window.
+///  - Callers must disable their dialog first (setEnabled(false)) so the
+///    nested loop cannot re-enter the triggering slot, and the dialog must
+///    stay alive for the duration (stack-allocated modals qualify).
+template <typename F>
+auto runOnThread(F&& fn) -> decltype(fn()) {
+    using T = decltype(fn());
+    auto result = std::make_shared<T>();          // shared heap slot
+    QThread* th = new WorkerThread(
+        [result, fn = std::forward<F>(fn)]() { *result = fn(); });
+    QEventLoop loop;
+    QObject::connect(th, &QThread::finished, &loop, &QEventLoop::quit);
+    th->start();
+    loop.exec();                                   // paint, stay responsive
+    return std::move(*result);
+}
 
 } // namespace usbutils

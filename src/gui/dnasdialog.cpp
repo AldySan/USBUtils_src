@@ -2,6 +2,7 @@
 #include "dnasdialog.h"
 
 #include "../core/ulid.h"
+#include "workerthread.h"
 
 #include <QComboBox>
 #include <QLabel>
@@ -139,11 +140,21 @@ void DnasDialog::patch() {
             != QMessageBox::Yes)
         return;
 
+    // Off the GUI thread: normally a quick root-directory walk + a
+    // ~100 KiB write, but locating the patch target can fall back to a
+    // scan of the game's WHOLE stream (minutes on USB drives) when the
+    // image has no IOPRP*.IMG entry — the window must keep painting
+    // through that. The dialog is stack-allocated and modal, and it is
+    // disabled for the duration, so the runOnThread() contract holds.
+    setEnabled(false);
     QApplication::setOverrideCursor(Qt::WaitCursor);
-    const int n = pkg_.patchGame(dir_.toStdString(), idHex_.toStdString(),
-                                 serial_.toStdString(), parts_,
-                                 ver.toStdString());
+    const int n = runOnThread([&]() {
+        return pkg_.patchGame(dir_.toStdString(), idHex_.toStdString(),
+                              serial_.toStdString(), parts_,
+                              ver.toStdString());
+    });
     QApplication::restoreOverrideCursor();
+    setEnabled(true);
 
     if (n < 0) {
         QMessageBox::critical(this, tr("DNAS patch"),
