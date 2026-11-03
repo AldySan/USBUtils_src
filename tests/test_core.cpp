@@ -398,6 +398,109 @@ static void testInstallExport() {
     fs::remove_all(base);
 }
 
+/// The 0.0.9 audit fixes: rename collision guards, rollback of half-done
+/// chunk renames, and immediate install cancellation.
+static void testRenameSafety() {
+    const fs::path base = fs::temp_directory_path() / "usbutils_rename";
+    fs::remove_all(base);
+    fs::create_directories(base);
+
+    // fabricated games (rename paths only touch ul.cfg + file names)
+    const std::string S1 = "SLUS_001.00", S2 = "SLUS_003.00";
+    const std::string idA = gameIdHex("Game A"), idB = gameIdHex("Game B");
+    auto putChunk = [&](const std::string& id, const std::string& serial, int i) {
+        std::FILE* f = std::fopen(
+            (base / chunkFileName(id, serial, i)).string().c_str(), "wb");
+        std::fputs("data", f);
+        std::fclose(f);
+    };
+    putChunk(idA, S1, 0); putChunk(idA, S1, 1);   // Game A, 2 parts
+    putChunk(idB, S1, 0);                          // Game B, same serial
+    putChunk(idA, S2, 0);                          // Game A again, other serial
+
+    UlCfg cfg;
+    cfg.dir = base.string();
+    UlCfgRecord a;  a.setName("Game A");  a.setSerial(S1); a.parts = 2;
+    UlCfgRecord b;  b.setName("Game B");  b.setSerial(S1); b.parts = 1;
+    UlCfgRecord d;  d.setName("Game A");  d.setSerial(S2); d.parts = 1;
+    cfg.records = {a, b, d};
+    CHECK(cfg.save());
+
+    // 1. collision guard: renaming Game A to "Game B" takes over Game B's
+    //    id+serial and would clobber its chunk files — must fail cleanly
+    {
+        UlCfg c;
+        CHECK(c.load(base.string()));
+        std::string err;
+        CHECK(!c.renameGame(0, "Game B", &err));
+        CHECK(!err.empty());
+        CHECK(fs::exists(base / chunkFileName(idA, S1, 0)));
+        CHECK(fs::exists(base / chunkFileName(idB, S1, 0)));
+        CHECK(c.records[0].nameStr() == "Game A");
+    }
+
+    // 2. rollback: part 1 missing -> renameSerial fails halfway and must
+    //    put part 0 back under the OLD serial
+    {
+        fs::remove(base / chunkFileName(idA, S1, 1));
+        UlCfg c;
+        CHECK(c.load(base.string()));
+        std::string err;
+        CHECK(!c.renameSerial(0, "SLUS_999.99", &err));
+        CHECK(!err.empty());
+        CHECK(fs::exists(base / chunkFileName(idA, S1, 0)));
+        CHECK(!fs::exists(base / chunkFileName(idA, "SLUS_999.99", 0)));
+        UlCfg c2;                                   // record unchanged on disk
+        CHECK(c2.load(base.string()));
+        CHECK(c2.records[0].serialStr() == S1);
+    }
+
+    // 3. duplicate id+serial guard on renameSerial
+    {
+        putChunk(idA, S1, 1);                       // restore the part
+        UlCfg c;
+        CHECK(c.load(base.string()));
+        std::string err;
+        CHECK(!c.renameSerial(0, S2, &err));        // Game A + S2 is record 2
+        CHECK(!err.empty());
+    }
+
+    // 4. a clean rename still works and reports no error
+    {
+        UlCfg c;
+        CHECK(c.load(base.string()));
+        std::string err;
+        CHECK(c.renameSerial(0, "SLUS_009.99", &err));
+        CHECK(err.empty());
+        CHECK(fs::exists(base / chunkFileName(idA, "SLUS_009.99", 0)));
+        CHECK(fs::exists(base / chunkFileName(idA, "SLUS_009.99", 1)));
+        CHECK(!fs::exists(base / chunkFileName(idA, S1, 0)));
+    }
+
+    fs::remove_all(base);
+}
+
+/// Cancellation must take effect inside the first chunk, not after a whole
+/// 1 GiB part, and must leave no file behind.
+static void testInstallCancel() {
+    const fs::path base = fs::temp_directory_path() / "usbutils_cancel";
+    fs::remove_all(base);
+    fs::create_directories(base);
+    const fs::path iso = base / "game.iso";
+    writeTestIso(iso, "SLUS_202.65", 2048 * 3);
+
+    InstallOptions opt;
+    opt.gameName = "Cancel Game";
+    InstallResult r = installIso(iso.string(), base.string(), opt, nullptr,
+                                 [] { return true; });   // cancelled at once
+    CHECK(!r.ok);
+    CHECK(r.error == "cancelled");
+    CHECK(!fs::exists(base / "ul.cfg"));
+    CHECK(scanFirstChunks(base.string()).empty());
+
+    fs::remove_all(base);
+}
+
 static void testVideoRip() {
     const fs::path base = fs::temp_directory_path() / "usbutils_vrip";
     fs::remove_all(base);
@@ -1283,6 +1386,8 @@ int main() {
     testIsoInfo();
     testGameStream();
     testInstallExport();
+    testRenameSafety();
+    testInstallCancel();
     testVideoRip();
     testIoprpLocate();
     testPs2Load();

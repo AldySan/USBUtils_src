@@ -50,6 +50,7 @@
 #include <QClipboard>
 #include <QGuiApplication>
 #include <QFile>
+#include <QSet>
 #include <QGroupBox>
 #include <QToolButton>
 #include <QIODevice>
@@ -890,11 +891,22 @@ void MainWindow::exportSelected() {
         [recs, outFile, outDir, dir](const ProgressFn& prog,
                                      const std::function<bool()>& cancel) -> JobOutcome {
             int done = 0;
+            QSet<QString> usedNames;   // sanitised names can collide
             for (const UlCfgRecord& rec : recs) {
                 QString target = outFile;
-                if (target.isEmpty())
-                    target = QDir(outDir).filePath(
-                        QString::fromStdString(rec.nameStr()) + ".iso");
+                if (target.isEmpty()) {
+                    // game names may contain characters a file name cannot
+                    // (':' breaks Windows, '/' breaks every OS) — sanitise
+                    // like the CLI does
+                    QString name = QString::fromStdString(rec.nameStr());
+                    for (QChar& c : name)
+                        if (QStringLiteral("\\/:*?\"<>|").contains(c))
+                            c = QLatin1Char('_');
+                    while (usedNames.contains(name))
+                        name += QLatin1String("_1");
+                    usedNames.insert(name);
+                    target = QDir(outDir).filePath(name + ".iso");
+                }
                 if (!usbutils::exportIso(dir.toStdString(), rec,
                                          target.toStdString(), prog, cancel))
                     return {false, cancel()
@@ -960,8 +972,10 @@ void MainWindow::renameSelected() {
         tr("New name:"), QLineEdit::Normal,
         QString::fromStdString(cfg_->records[row].nameStr()), &ok);
     if (!ok || name.isEmpty()) return;
-    if (!cfg_->renameGame(static_cast<size_t>(row), name.toStdString())) {
-        QMessageBox::critical(this, tr("USBUtils"), tr("Rename failed."));
+    std::string err;
+    if (!cfg_->renameGame(static_cast<size_t>(row), name.toStdString(), &err)) {
+        QMessageBox::critical(this, tr("USBUtils"),
+            tr("Rename failed:\n%1").arg(QString::fromStdString(err)));
         return;
     }
     refreshGames();

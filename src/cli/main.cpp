@@ -311,8 +311,9 @@ static int cmdRename(const Args& a) {
     UlCfg cfg;
     if (!cfg.load(a.dir)) { std::printf("ERROR: no ul.cfg\n"); return 1; }
     if (a.index >= (int)cfg.records.size()) { std::printf("ERROR: bad index\n"); return 1; }
-    if (!cfg.renameGame(static_cast<size_t>(a.index), a.name)) {
-        std::printf("ERROR: rename failed\n");
+    std::string err;
+    if (!cfg.renameGame(static_cast<size_t>(a.index), a.name, &err)) {
+        std::printf("ERROR: rename failed (%s)\n", err.c_str());
         return 1;
     }
     std::printf("renamed to \"%s\" (id now %s)\n", a.name.c_str(),
@@ -584,14 +585,13 @@ static int cmdPs2Load(const Args& a) {
     if (a.sub == "inject") {
         std::string elf = a.elf;
         if (elf.empty()) {
-            for (const char* cand : {"PS2LOAD.ELF", "data/PS2LOAD.ELF"}) {
-                FILE* f = std::fopen(cand, "rb");
-                if (f) { std::fclose(f); elf = cand; break; }
-            }
+            // search next to the program, in ./data and $USBUTILS_DATA —
+            // the same places the support-file check looks
+            elf = findSupportFile("PS2LOAD.ELF");
         }
         if (elf.empty()) {
-            std::printf("ERROR: PS2LOAD.ELF not found next to the tool; "
-                        "pass it with --elf (shipped in data/)\n");
+            std::printf("ERROR: PS2LOAD.ELF not found; pass it with --elf "
+                        "(shipped in data/ next to the program)\n");
             return 1;
         }
         std::printf("injecting from %s ...\n", elf.c_str());

@@ -86,6 +86,48 @@ std::vector<UsbDrive> listDrives() {
 
 #else // POSIX
 
+#if defined(__linux__)
+/// Real filesystem type of a mount point, looked up in /proc/self/mounts.
+/// Mount-point fields escape space/tab/newline/backslash as \040/\011/
+/// \012/\134 — escape our path the same way so labels with spaces still
+/// match. Returns "" when the mount is not listed.
+static std::string mountsFsType(const std::string& root) {
+    std::string trimmed = root;
+    if (!trimmed.empty() && trimmed.back() == '/')
+        trimmed.pop_back();                        // mounts entries have no trailing '/'
+    std::string escaped;
+    for (char c : trimmed) {
+        if (c == ' ')       escaped += "\\040";
+        else if (c == '\t') escaped += "\\011";
+        else if (c == '\n') escaped += "\\012";
+        else if (c == '\\') escaped += "\\134";
+        else                escaped += c;
+    }
+
+    FILE* f = std::fopen("/proc/self/mounts", "r");
+    if (!f) return {};
+    std::string found;
+    char line[4096];
+    while (std::fgets(line, sizeof(line), f)) {
+        if (!std::strchr(line, '\n')) {            // very long line: drain it
+            int c2;
+            while ((c2 = std::fgetc(f)) != EOF && c2 != '\n') {}
+            continue;
+        }
+        // "<device> <mountpoint> <fstype> <options> ..."
+        char dev[1024] = {}, mnt[2048] = {}, fst[64] = {};
+        if (std::sscanf(line, "%1023s %2047s %63s", dev, mnt, fst) == 3) {
+            if (mnt == escaped || mnt == trimmed) {
+                found = fst;
+                break;
+            }
+        }
+    }
+    std::fclose(f);
+    return found;
+}
+#endif // __linux__
+
 static void addMount(std::vector<UsbDrive>& out, const std::string& mp) {
     if (mp.empty()) return;
     std::string root = mp;
@@ -100,9 +142,15 @@ static void addMount(std::vector<UsbDrive>& out, const std::string& mp) {
     d.totalBytes = static_cast<uint64_t>(st.f_blocks) * st.f_frsize;
     d.freeBytes = static_cast<uint64_t>(st.f_bavail) * st.f_frsize;
 
-    // Filesystem type: statvfs f_basetype is not portable; use a heuristic
-    // plus presence of FAT markers (any file > 4 GiB ⇒ not FAT32).
-    d.fat32 = d.totalBytes > 0;  // refined below
+    // Filesystem type. statvfs has no portable fstype field, so probe
+    // /proc/self/mounts on Linux; elsewhere report "unknown" rather than
+    // wrongly claiming FAT32 for every drive.
+#if defined(__linux__)
+    const std::string fst = mountsFsType(root);
+    d.fat32 = fst == "vfat" || fst == "msdos" || fst == "umsdos";
+#else
+    d.fat32 = false;
+#endif
     d.hasUlCfg = probeUlCfg(root);
 
     // Volume label: Linux exposes it as /media/<label> basename.
