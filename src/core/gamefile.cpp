@@ -94,7 +94,7 @@ std::vector<FoundChunk> scanFirstChunks(const std::string& dir) {
 static uint64_t fileSizeOf(const std::string& p) {
     FILE* f = std::fopen(p.c_str(), "rb");
     if (!f) return 0;
-    if (std::fseek(f, 0, SEEK_END) != 0) { std::fclose(f); return 0; }
+    if (!usbutils::seek64(f, 0, SEEK_END)) { std::fclose(f); return 0; }
     const long long sz = usbutils::tell64(f);
     std::fclose(f);
     return sz < 0 ? 0 : static_cast<uint64_t>(sz);
