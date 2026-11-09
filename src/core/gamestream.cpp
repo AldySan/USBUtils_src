@@ -30,6 +30,7 @@ uint64_t fileSizeOf(const std::string& p) {
 
 bool GameStream::open(const std::string& dir, const std::string& idHex,
                       const std::string& serial, uint32_t parts) {
+    closeAll_();
     dir_ = dir; idHex_ = idHex; serial_ = serial;
     parts_ = parts;
     starts_.clear();
@@ -41,7 +42,58 @@ bool GameStream::open(const std::string& dir, const std::string& idHex,
         starts_.push_back(total_);
         total_ += fileSizeOf(chunkPath_(i));
     }
+    files_.assign(parts, nullptr);
+    mode_.assign(parts, kClosed);
     return true;
+}
+
+GameStream::~GameStream() { closeAll_(); }
+
+std::FILE* GameStream::handle_(uint32_t chunk, bool forWrite) {
+    if (chunk >= parts_) return nullptr;
+    const HandleMode mode = files_[chunk]
+        ? static_cast<HandleMode>(mode_[chunk]) : kClosed;
+    const bool serves = forWrite
+        ? (mode == kReadWrite || mode == kWriteNew)
+        : (mode == kRead || mode == kReadWrite);
+    if (serves) return files_[chunk];
+    if (files_[chunk]) {                       // reopen in the needed mode
+        std::fclose(files_[chunk]);
+        files_[chunk] = nullptr;
+    }
+
+    const std::string path = chunkPath_(chunk);
+    std::FILE* f = nullptr;
+    uint8_t opened = kClosed;
+    if (forWrite) {
+        f = std::fopen(path.c_str(), "r+b");
+        if (f) opened = kReadWrite;
+        else {
+            f = std::fopen(path.c_str(), "wb");  // chunk missing per ul.cfg
+            if (f) opened = kWriteNew;
+        }
+    } else {
+        f = std::fopen(path.c_str(), "rb");
+        if (f) opened = kRead;
+    }
+    files_[chunk] = f;
+    mode_[chunk]  = opened;
+    return f;
+}
+
+void GameStream::drop_(uint32_t chunk) {
+    if (chunk < parts_ && files_[chunk]) {
+        std::fclose(files_[chunk]);
+        files_[chunk] = nullptr;
+        mode_[chunk] = kClosed;
+    }
+}
+
+void GameStream::closeAll_() {
+    for (size_t i = 0; i < files_.size(); ++i)
+        if (files_[i]) std::fclose(files_[i]);
+    files_.clear();
+    mode_.clear();
 }
 
 std::string GameStream::chunkPath_(uint32_t index) const {
@@ -82,12 +134,16 @@ size_t GameStream::read(uint64_t offset, void* dst, size_t n) {
         if (!locate_(offset + got, chunk, inChunk, avail)) break;
         const size_t want = static_cast<size_t>(
             std::min<uint64_t>(n - got, avail));
-        FILE* f = std::fopen(chunkPath_(chunk).c_str(), "rb");
+        std::FILE* f = handle_(chunk, false);
         if (!f) break;
         const bool ok = usbutils::seek64(f, static_cast<int64_t>(inChunk))
                      && std::fread(out + got, 1, want, f) == want;
-        std::fclose(f);
-        if (!ok) break;
+        if (!ok) {
+            // drop the (possibly stale) handle so a later call retries
+            // with a fresh open, exactly like the old open-per-call code
+            drop_(chunk);
+            break;
+        }
         got += want;
     }
     return got;
@@ -102,12 +158,14 @@ bool GameStream::write(uint64_t offset, const void* src, size_t n) {
         if (!locate_(offset + put, chunk, inChunk, avail)) return false;
         const size_t want = static_cast<size_t>(
             std::min<uint64_t>(n - put, avail));
-        FILE* f = std::fopen(chunkPath_(chunk).c_str(), "r+b");
+        std::FILE* f = handle_(chunk, true);
         if (!f) return false;
         const bool ok = usbutils::seek64(f, static_cast<int64_t>(inChunk))
                      && std::fwrite(in + put, 1, want, f) == want;
-        std::fclose(f);
-        if (!ok) return false;
+        if (!ok) {
+            drop_(chunk);
+            return false;
+        }
         put += want;
     }
     return true;
@@ -122,16 +180,16 @@ uint64_t GameStream::append(const void* src, size_t n, uint64_t limit) {
 
     // The append always lands in (and grows) the LAST chunk file.
     const uint32_t   last   = parts_ - 1;
-    const std::string path  = chunkPath_(last);
     const uint64_t   inChunk = total_ - starts_[last];
 
-    FILE* f = std::fopen(path.c_str(), "r+b");
-    if (!f) f = std::fopen(path.c_str(), "wb");   // chunk exists per ul.cfg
+    std::FILE* f = handle_(last, true);
     if (!f) return ~0ull;
     const bool ok = usbutils::seek64(f, static_cast<int64_t>(inChunk))
                  && std::fwrite(src, 1, n, f) == n;
-    std::fclose(f);
-    if (!ok) return ~0ull;
+    if (!ok) {
+        drop_(last);
+        return ~0ull;
+    }
 
     const uint64_t at = total_;
     total_ += n;
@@ -149,6 +207,11 @@ bool GameStream::truncate(uint64_t newSize) {
     const std::string path = chunkPath_(last);
     const uint64_t   want  = newSize - starts_[last];
 
+    // Flush and drop every cached handle first: an open stdio handle may
+    // still hold buffered bytes past the new size, and a later close()
+    // would write them back AFTER the truncation below.
+    closeAll_();
+
     FILE* f = std::fopen(path.c_str(), "r+b");
     if (!f) return false;
     bool ok = usbutils::seek64(f, static_cast<int64_t>(want))
@@ -163,6 +226,8 @@ bool GameStream::truncate(uint64_t newSize) {
     std::fclose(f);
     if (!ok) return false;
     total_ = newSize;
+    files_.assign(parts_, nullptr);
+    mode_.assign(parts_, kClosed);
     return true;
 }
 

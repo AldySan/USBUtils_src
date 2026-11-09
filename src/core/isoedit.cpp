@@ -13,6 +13,9 @@ namespace {
 
 constexpr uint32_t kSector = 2048;
 constexpr uint64_t kMaxOneExtent = 0xFFFFF800ull;   ///< 4 GiB - 2048
+/// File-copy granularity (heap buffer shared by extract/save paths;
+/// 64 KiB made an ISO build/rebuild issue 128x the necessary syscalls).
+constexpr size_t kCopyBuf = 4u << 20;
 
 inline uint32_t bswap32(uint32_t v) {
     return ((v & 0xffu) << 24) | (((v >> 8) & 0xffu) << 16) |
@@ -436,13 +439,13 @@ bool IsoImageDoc::extractTo(const IsoNode* node, const std::string& outPath) {
     if (!out) return false;
     bool ok = true;
 
+    std::vector<uint8_t> buf(kCopyBuf);
     if (node->isExternal()) {
         FILE* in = std::fopen(node->extPath.c_str(), "rb");
         if (!in) { std::fclose(out); return false; }
-        uint8_t buf[65536];
         size_t n;
-        while ((n = std::fread(buf, 1, sizeof(buf), in)) > 0)
-            if (std::fwrite(buf, 1, n, out) != n) { ok = false; break; }
+        while ((n = std::fread(buf.data(), 1, buf.size(), in)) > 0)
+            if (std::fwrite(buf.data(), 1, n, out) != n) { ok = false; break; }
         if (std::ferror(in)) ok = false;
         std::fclose(in);
     } else {
@@ -454,11 +457,10 @@ bool IsoImageDoc::extractTo(const IsoNode* node, const std::string& outPath) {
                 break;
             }
             uint64_t left = run.srcSize;
-            uint8_t buf[65536];
             while (left) {
-                const size_t take = size_t(std::min<uint64_t>(left, sizeof(buf)));
-                if (std::fread(buf, 1, take, in) != take) { ok = false; break; }
-                if (std::fwrite(buf, 1, take, out) != take) { ok = false; break; }
+                const size_t take = size_t(std::min<uint64_t>(left, buf.size()));
+                if (std::fread(buf.data(), 1, take, in) != take) { ok = false; break; }
+                if (std::fwrite(buf.data(), 1, take, out) != take) { ok = false; break; }
                 left -= take;
             }
             std::fclose(in);
@@ -490,19 +492,19 @@ namespace {
 
 /// Stream `bytes` of a node's logical content (skipping `skip` bytes) to
 /// `out`. Handles external files and multi-run source extents.
+/// `buf` is the caller-provided copy buffer (shared across extents).
 bool writeNodeContent(FILE* out, const IsoNode* node, uint64_t skip,
-                      uint64_t bytes) {
+                      uint64_t bytes, std::vector<uint8_t>& buf) {
     if (node->isExternal()) {
         FILE* in = std::fopen(node->extPath.c_str(), "rb");
         if (!in || (skip && !seek64(in, int64_t(skip)))) {
             if (in) std::fclose(in);
             return false;
         }
-        uint8_t buf[65536];
         while (bytes) {
-            const size_t take = size_t(std::min<uint64_t>(bytes, sizeof(buf)));
-            if (std::fread(buf, 1, take, in) != take) { std::fclose(in); return false; }
-            if (std::fwrite(buf, 1, take, out) != take) { std::fclose(in); return false; }
+            const size_t take = size_t(std::min<uint64_t>(bytes, buf.size()));
+            if (std::fread(buf.data(), 1, take, in) != take) { std::fclose(in); return false; }
+            if (std::fwrite(buf.data(), 1, take, out) != take) { std::fclose(in); return false; }
             bytes -= take;
         }
         std::fclose(in);
@@ -518,11 +520,10 @@ bool writeNodeContent(FILE* out, const IsoNode* node, uint64_t skip,
             return false;
         }
         uint64_t left = std::min(bytes, run.srcSize - skip);
-        uint8_t buf[65536];
         while (left) {
-            const size_t take = size_t(std::min<uint64_t>(left, sizeof(buf)));
-            if (std::fread(buf, 1, take, in) != take) { std::fclose(in); return false; }
-            if (std::fwrite(buf, 1, take, out) != take) { std::fclose(in); return false; }
+            const size_t take = size_t(std::min<uint64_t>(left, buf.size()));
+            if (std::fread(buf.data(), 1, take, in) != take) { std::fclose(in); return false; }
+            if (std::fwrite(buf.data(), 1, take, out) != take) { std::fclose(in); return false; }
             left -= take;
             bytes -= take;
         }
@@ -829,9 +830,10 @@ bool IsoImageDoc::saveAs(const std::string& outPath,
 
     // ---- file extents ---------------------------------------------------------
     if (ok) {
+        std::vector<uint8_t> copyBuf(kCopyBuf);   // shared across extents
         for (const WriteExtent& fe : extents) {
             if (fe.bytes == 0) continue;               // empty file: no data
-            if (!writeNodeContent(out, fe.node, fe.skip, fe.bytes)) {
+            if (!writeNodeContent(out, fe.node, fe.skip, fe.bytes, copyBuf)) {
                 ok = false;
                 if (error) *error = "failed reading content of '" +
                                     fe.node->name + "'";

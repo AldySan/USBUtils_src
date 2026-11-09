@@ -25,6 +25,15 @@ public:
     /// Open the chunk sequence `ul.<idHex>.<serial>.00..NN-1` in `dir`.
     /// Missing chunks are tolerated as zero-length (size() reflects only
     /// the bytes actually present).
+    /// Chunk files stay open for the object's lifetime: every read/write
+    /// used to fopen/fseek/fclose per call, which cost an open+close pair
+    /// on each 2 KiB directory read during ISO walks and defeated the
+    /// kernel's sequential read-ahead on the underlying device.
+    ~GameStream();
+    GameStream() = default;
+    GameStream(const GameStream&) = delete;
+    GameStream& operator=(const GameStream&) = delete;
+
     bool open(const std::string& dir, const std::string& idHex,
               const std::string& serial, uint32_t parts);
 
@@ -64,6 +73,17 @@ private:
     /// bytes available in that chunk). Returns false past the end.
     bool locate_(uint64_t offset, uint32_t& chunk, uint64_t& inChunk,
                  uint64_t& avail) const;
+    /// Cached handle for `chunk`; opens lazily. Read requests accept a
+    /// read-capable handle ("rb"/"r+b"), write requests a write-capable
+    /// one ("r+b"/"wb"); anything else is reopened in the needed mode.
+    /// Returns null when the chunk cannot be opened.
+    std::FILE* handle_(uint32_t chunk, bool forWrite);
+    /// Drop the cached handle of `chunk` (after an I/O error, or before
+    /// external truncation).
+    void drop_(uint32_t chunk);
+    void closeAll_();
+
+    enum HandleMode : uint8_t { kClosed = 0, kRead, kReadWrite, kWriteNew };
 
     std::string dir_;
     std::string idHex_;
@@ -71,6 +91,8 @@ private:
     uint32_t    parts_ = 0;
     std::vector<uint64_t> starts_;   ///< cumulative start offset of each chunk
     uint64_t    total_ = 0;
+    std::vector<std::FILE*> files_;  ///< lazily opened chunk handles
+    std::vector<uint8_t>    mode_;   ///< HandleMode of each files_[] entry
 };
 
 } // namespace usbutils
