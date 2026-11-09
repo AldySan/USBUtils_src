@@ -33,7 +33,7 @@ std::vector<OrphanGame> findOrphans(const std::string& dir) {
             std::snprintf(nn, sizeof(nn), "%02u", i);
             FILE* f = std::fopen((p + nn).c_str(), "rb");
             if (!f) break;
-            if (std::fseek(f, 0, SEEK_END) == 0)
+            if (usbutils::seek64(f, 0, SEEK_END))
                 og.totalBytes += static_cast<uint64_t>(usbutils::tell64(f));
             std::fclose(f);
         }

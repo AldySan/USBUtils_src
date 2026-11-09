@@ -132,11 +132,13 @@ static bool scanForIoprpMagic(GameStream& stream, uint64_t& offset,
 
     std::vector<uint8_t> buf(4 * 1024 * 1024);
     std::vector<uint8_t> carry;
+    std::vector<uint8_t> hay;                     // reused: no realloc churn
     uint64_t carryStart = 0;                     // absolute offset of carry[0]
     uint64_t pos = 0;
     size_t n;
     while ((n = stream.read(pos, buf.data(), buf.size())) > 0) {
-        std::vector<uint8_t> hay = carry;
+        hay.clear();
+        hay.insert(hay.end(), carry.begin(), carry.end());
         hay.insert(hay.end(), buf.begin(), buf.begin() + n);
         const size_t found = std::search(hay.begin(), hay.end(),
                                          magic, magic + 8) - hay.begin();

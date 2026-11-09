@@ -350,6 +350,27 @@ static void testGameStream() {
           && out[4] == 4 && out[5] == 5 && out[6] == 103);
 
     CHECK(s.read(150, out, 4) == 0);           // past the end
+
+    // handle-cache regression: append grows the last chunk and the bytes
+    // stay readable through the SAME stream (cached handle escalates
+    // read-only -> read/write), then truncate drops them again
+    const uint8_t ap[4] = {9, 8, 7, 6};
+    CHECK(s.append(ap, 4, 1ull << 30) == 150);
+    CHECK(s.size() == 154);
+    CHECK(s.read(150, out, 4) == 4);
+    CHECK(out[0] == 9 && out[1] == 8 && out[2] == 7 && out[3] == 6);
+    CHECK(s.truncate(150));
+    CHECK(s.size() == 150);
+    CHECK(s.read(148, out, 2) == 2);           // cached handles reopen cleanly
+    CHECK(out[0] == 148 && out[1] == 149);
+    CHECK(s.read(150, out, 4) == 0);           // gone again
+
+    // the on-disk state must match (a fresh stream sees the truncation)
+    {
+        GameStream t;
+        CHECK(t.open(base.string(), id, serial, 2));
+        CHECK(t.size() == 150);
+    }
     fs::remove_all(base);
 }
 
