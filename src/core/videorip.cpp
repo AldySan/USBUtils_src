@@ -194,7 +194,7 @@ bool loadSidecar(const std::string& path, Sidecar& out) {
 class PayloadReader {
 public:
     explicit PayloadReader(const Sidecar& sc)
-        : rawLeft_(sc.payloadRaw), v2_(sc.v2) {
+        : v2_(sc.v2), rawLeft_(sc.payloadRaw) {
         if (sc.path.empty()) return;           // no old sidecar — nothing to read
         f_ = std::fopen(sc.path.c_str(), "rb");
         if (f_ && !usbutils::seek64(f_, static_cast<int64_t>(sc.dataStart))) {
