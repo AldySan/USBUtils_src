@@ -14,15 +14,23 @@
  * "restore" (the original's "Activate") can bring every video back.
  *
  * Sidecar format — "<first chunk name>.rip", little-endian. Current
- * writers emit "USRRIP02" (payload block-compressed); "USRRIP01"
- * sidecars from older builds are still read:
- *   [0..7]   magic "USRRIP01" / "USRRIP02"
+ * writers emit "USRRIP03" (block-compressed payload, per-entry CRC32);
+ * "USRRIP02" and "USRRIP01" sidecars from older builds are still read
+ * (and upgraded to v3 the next time the sidecar is rewritten):
+ *   [0..7]   magic "USRRIP01" / "USRRIP02" / "USRRIP03"
  *   [8..11]  uint32 entry count
- *   [12..19] uint64 uncompressed payload size (USRRIP02 only)
- *   [...]    entries: { uint64 stream offset, uint64 size } pairs
+ *   [12..19] uint64 uncompressed payload size (v2/v3 only)
+ *   [...]    entries: { uint64 stream offset, uint64 size } (v1/v2),
+ *            v3 adds uint32 crc32 per entry
  *   [...]    payload: original bytes of each entry, in entry order —
- *            verbatim in v1, stored/LZSS 1 MiB blocks in v2
+ *            verbatim in v1, stored/LZSS 1 MiB blocks in v2/v3
  *            (see lzpack.h)
+ * The v3 crc32 (usbutils::crc32) is seeded with the entry's own 16
+ * record bytes (little-endian offset, then size) and then fed the
+ * entry's uncompressed payload, so a corrupted index fails the check
+ * exactly like corrupted payload data would. Restore verifies every
+ * entry BEFORE writing a single byte into the game; v1/v2 sidecars
+ * carry no checksums and are restored after the structural checks only.
  */
 #pragma once
 

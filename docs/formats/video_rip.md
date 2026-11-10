@@ -31,21 +31,23 @@ recognized video formats") @0x940B8.
 
 ### Sidecar backup format — `ul.<ID>.<SERIAL>.00.rip`
 
-Little-endian, `#pragma pack(1)`. Current builds write **USRRIP02**
-(block-compressed payload); **USRRIP01** sidecars from older builds are
-still read (and carried along when more media are ripped later):
+Little-endian, `#pragma pack(1)`. Current builds write **USRRIP03**
+(block-compressed payload + per-entry CRC32); **USRRIP02** and
+**USRRIP01** sidecars from older builds are still read (and upgraded
+to v3 the next time more media are ripped with a backup):
 
 | Offset | Size | Field |
 |--------|------|-------|
-| 0 | 8 | magic `"USRRIP01"` / `"USRRIP02"` |
+| 0 | 8 | magic `"USRRIP01"` / `"USRRIP02"` / `"USRRIP03"` |
 | 8 | 4 | uint32 entry count |
-| 12 | 8 | uint64 uncompressed payload size (USRRIP02 only) |
-| 12/20 | 16×N | entries: `{ uint64 streamOffset, uint64 size }` |
+| 12 | 8 | uint64 uncompressed payload size (v2/v3 only) |
+| 12 | 16×N | entries (v1/v2): `{ uint64 streamOffset, uint64 size }` |
+| 20 | 20×N | entries (v3): `{ uint64 streamOffset, uint64 size, uint32 crc32 }` |
 | … | … | payload (below) |
 
 The payload is the original bytes of each entry, in entry order. In a
-v1 sidecar it is stored verbatim. In a v2 sidecar it is a sequence of
-1 MiB blocks, each self-describing (see `core/lzpack.h`):
+v1 sidecar it is stored verbatim. In v2/v3 it is a sequence of 1 MiB
+blocks, each self-describing (see `core/lzpack.h`):
 
 ```
 uint32 hdr    bit 31 = 1 -> LZSS data (uint32 compLen follows),
@@ -58,10 +60,28 @@ units (1 bit each, 1 = literal byte, 0 = 3-byte match token: uint16
 back-offset 1..65535 within the same block + uint8 length−4). The
 decoder rejects any offset reaching before the block start, so a
 corrupt sidecar fails loudly instead of writing garbage into the game.
-Known limitation: the payload carries no checksum, so structural
-corruption is caught but a flipped bit that stays structurally valid
-would restore wrong bytes silently — a USRRIP03 with a per-entry CRC32
-is the planned fix (see anti-slop/audit-004, accepted risks).
+
+The v3 `crc32` of an entry is standard CRC-32/ISO-HDLC
+(`usbutils::crc32` in `core/crc32.h`, zlib-compatible: polynomial
+0xEDB88320 reflected, init and xorout 0xFFFFFFFF — `crc32(0, "123456789", 9)`
+is `0xCBF43926`) computed over the entry's own 16 record bytes —
+little-endian `streamOffset`, then `size` — followed by the entry's
+uncompressed payload bytes. Folding the record into the checksum means
+a corrupted index (a flipped offset bit passes every structural check,
+since the size sum still matches the payload size) fails exactly like
+corrupted payload data would.
+
+Restore verifies every entry's CRC32 **before writing a single byte
+into the game**: a corrupt backup is reported while the media are still
+blanked (a blanked game still boots; a half-restored one may not), the
+failing file is named when the index is intact, and the sidecar is kept
+for recovery from a healthy copy. The verification pass is read-only —
+one extra read of the sidecar — and reuses the progress callback, so a
+progress indicator runs to 100% twice (verify, then write). v1/v2
+backups carry no checksums: they pass the structural checks (magic,
+count clamp, payload size) and are restored as-is; ripping more media
+with a backup upgrades them to v3, which is the cheapest way to make
+an old backup verifiable.
 
 Ripping more media later appends entries and re-encodes the whole
 payload — previously backed-up bytes are re-read from the old sidecar
@@ -104,9 +124,9 @@ blank/restore mechanism, applied to standalone audio files:
   `.VAB`/`.VH`/`.VB` (VAB sample banks), `.ADS`/`.ASS`/`.SS2` (ADPCM
   streams), `.MIB`/`.MIH` (interleaved music and its header).
 * The backup sidecar is `ul.<ID>.<SERIAL>.00.arip` — the same container
-  as `.rip` (USRRIP02, block-compressed), so a video rip and an audio
-  rip on the same game keep independent backups and can be restored in
-  either order.
+  as `.rip` (USRRIP03, block-compressed, per-entry CRC32), so a video rip
+  and an audio rip on the same game keep independent backups and can be
+  restored in either order.
 * Video detection (`.PSS`) and audio detection never overlap, so
   `unrip` and `unrip --audio` each restore exactly their own media.
 * Like the video rip it is size-preserving: files are blanked with

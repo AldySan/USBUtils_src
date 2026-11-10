@@ -14,10 +14,14 @@
  * 11. gameops: find / files / extract / inject / copy / move /
  *     correct-code-666.66 / general report
  * 12. update: version comparison logic
- * 13. sidecar backup compression: block-LZSS codec round-trips,
- *     USRRIP02 writer, USRRIP01 reader, incremental rips, corruption
+ * 13. sidecar backup: block-LZSS round-trips, USRRIP03 writer with
+ *     per-entry CRC32, USRRIP01/02 readers, incremental rip upgrades,
+ *     corruption detection
  * 14. iso shrink: relink/compact/truncate round-trip, chunk-file and
  *     ul.cfg parts reduction, rip-backup interplay, refusal paths
+ * 15. sidecar checksums: CRC-32 vectors, v3 layout + CRC definition,
+ *     payload/index corruption refused before any write, v2 -> v3
+ *     upgrade with recomputed checksums
  */
 #include "ulcfg.h"
 #include "ulid.h"
@@ -28,6 +32,7 @@
 #include "gamedb.h"
 #include "dnas.h"
 #include "videorip.h"
+#include "crc32.h"
 #include "lzpack.h"
 #include "isoshrink.h"
 #include "ps2load.h"
@@ -906,7 +911,7 @@ static void testAudioRip() {
 }
 
 // ---------------------------------------------------------------------------
-// sidecar backup compression (USRRIP02)
+// sidecar backup compression (USRRIP02/03)
 // ---------------------------------------------------------------------------
 
 static void testSidecarCompression() {
@@ -940,7 +945,7 @@ static void testSidecarCompression() {
         CHECK(!lzDecodeBlock(shortStream, sizeof(shortStream), out, sizeof(out)));
     }
 
-    // ---- rip with backup writes a compressed USRRIP02 sidecar ------------
+    // ---- rip with backup writes a compressed USRRIP03 sidecar ------------
     const fs::path base = fs::temp_directory_path() / "usbutils_ripz";
     fs::remove_all(base);
     fs::create_directories(base);
@@ -998,12 +1003,12 @@ static void testSidecarCompression() {
             char magic[8] = {};
             CHECK(std::fread(magic, 1, 8, f) == 8);
             std::fclose(f);
-            CHECK(std::memcmp(magic, "USRRIP02", 8) == 0);
+            CHECK(std::memcmp(magic, "USRRIP03", 8) == 0);
         }
     }
     CHECK(fs::file_size(rip) < big.size() / 2);
 
-    // rip NOISE on top: the incremental save must re-read the v2 payload
+    // rip NOISE on top: the incremental save must re-read the v3 payload
     // (the game stream holds zeros for BIG by now) and keep everything
     // restorable; the incompressible noise ends up stored verbatim
     const uint64_t rawTotal = big.size() + noise.size();
@@ -1064,7 +1069,49 @@ static void testSidecarCompression() {
         CHECK(filesEqual(iso, base / "back1.iso"));
     }
 
-    // ---- an incremental rip upgrades a v1 sidecar to v2 unharmed ---------
+    // ---- a hand-written USRRIP02 sidecar still restores ------------------
+    // (compressed-era backups keep working; they carry no CRCs and are
+    //  accepted after the structural checks only)
+    {
+        videos = scanVideos(base.string(), id, serial, 1, &err);
+        std::vector<VideoEntry> n2;
+        for (const auto& v : videos)
+            if (v.path == "MOVIES\\NOISE.PSS") n2.push_back(v);
+        CHECK(ripVideos(base.string(), id, serial, 1, n2, false).ok);
+        FILE* f = std::fopen(rip.string().c_str(), "wb");
+        CHECK(f != nullptr);
+        if (f) {
+            unsigned char hdr[20] = {
+                'U','S','R','R','I','P','0','2', 0x01, 0, 0, 0 };
+            const uint64_t pr = noise.size();
+            std::memcpy(hdr + 12, &pr, 8);
+            CHECK(std::fwrite(hdr, 1, sizeof(hdr), f) == sizeof(hdr));
+            const uint64_t rec[2] = {noiseOff, noise.size()};
+            CHECK(std::fwrite(rec, 8, 2, f) == 2);
+            uint64_t left = noise.size();      // one stored block per MiB
+            size_t off = 0;
+            while (left > 0) {
+                const uint32_t blen = static_cast<uint32_t>(
+                    std::min<uint64_t>(kLzBlockSize, left));
+                CHECK(std::fwrite(&blen, 4, 1, f) == 1);
+                CHECK(std::fwrite(noise.data() + off, 1, blen, f) == blen);
+                off += blen;
+                left -= blen;
+            }
+            std::fclose(f);
+        }
+        const RipResult rv2 = restoreVideos(base.string(), id, serial, 1);
+        CHECK(rv2.ok);
+        CHECK(rv2.rippedCount == 1);
+        CHECK(!fs::exists(rip));
+        UlCfg cfg;
+        CHECK(cfg.load(base.string()));
+        CHECK(exportIso(base.string(), cfg.records[0],
+                        (base / "back_v2.iso").string()));
+        CHECK(filesEqual(iso, base / "back_v2.iso"));
+    }
+
+    // ---- an incremental rip upgrades a v1 sidecar to v3 unharmed ---------
     // (BIG blanked without backup + a v1 sidecar holding its originals;
     //  ripping NOISE with a backup must carry BIG's payload across)
     uint64_t bigOff = 0;
@@ -1132,12 +1179,12 @@ static void testSidecarCompression() {
                 std::fclose(f);
             }
         }
-        CHECK(all.size() > 20 + 16 + 4096);
+        CHECK(all.size() > 20 + 20 + 4096);
         {
             FILE* f = std::fopen(rip.string().c_str(), "wb");
             CHECK(f != nullptr);
             if (f) {
-                std::fwrite(all.data(), 1, 20 + 16 + 4096, f);
+                std::fwrite(all.data(), 1, 20 + 20 + 4096, f);
                 std::fclose(f);
             }
         }
@@ -1146,7 +1193,7 @@ static void testSidecarCompression() {
         CHECK(!rt.error.empty());
         CHECK(fs::exists(rip));
     }
-    // tampered v2 header: payloadRaw no longer matches the entry sizes
+    // tampered v2/v3 header: payloadRaw no longer matches the entry sizes
     {
         FILE* f = std::fopen(rip.string().c_str(), "r+b");
         CHECK(f != nullptr);
@@ -1158,6 +1205,378 @@ static void testSidecarCompression() {
         const RipResult rt2 = restoreVideos(base.string(), id, serial, 1);
         CHECK(!rt2.ok);
         CHECK(!rt2.error.empty());
+    }
+
+    fs::remove_all(base);
+}
+
+// ---------------------------------------------------------------------------
+// sidecar entry checksums (USRRIP03)
+// ---------------------------------------------------------------------------
+
+/// Read a whole file into a vector (empty when it cannot be read).
+static std::vector<uint8_t> readFileBytes(const fs::path& p) {
+    std::vector<uint8_t> out;
+    FILE* f = std::fopen(p.string().c_str(), "rb");
+    if (!f) return out;
+    uint8_t tb[65536];
+    size_t n;
+    while ((n = std::fread(tb, 1, sizeof(tb), f)) > 0)
+        out.insert(out.end(), tb, tb + n);
+    std::fclose(f);
+    return out;
+}
+
+/// Decode a USRRIP02/03 block payload (the bytes after the entry table)
+/// into `payloadRaw` raw bytes. Returns false on any structural problem.
+static bool decodeBlockPayload(const std::vector<uint8_t>& sc, size_t at,
+                               uint64_t payloadRaw,
+                               std::vector<uint8_t>& payload) {
+    payload.clear();
+    while (payload.size() < payloadRaw) {
+        if (at + 4 > sc.size()) return false;
+        uint32_t bh = 0;
+        std::memcpy(&bh, sc.data() + at, 4);
+        at += 4;
+        const uint32_t rawLen = bh & 0x7FFFFFFFu;
+        if (rawLen == 0 || rawLen > kLzBlockSize
+            || payload.size() + rawLen > payloadRaw)
+            return false;
+        if (bh & 0x80000000u) {
+            if (at + 4 > sc.size()) return false;
+            uint32_t compLen = 0;
+            std::memcpy(&compLen, sc.data() + at, 4);
+            at += 4;
+            const size_t before = payload.size();
+            payload.resize(before + rawLen);
+            if (at + compLen > sc.size()
+                || !lzDecodeBlock(sc.data() + at, compLen,
+                                  payload.data() + before, rawLen))
+                return false;
+            at += compLen;
+        } else {
+            if (at + rawLen > sc.size()) return false;
+            payload.insert(payload.end(), sc.data() + at,
+                           sc.data() + at + rawLen);
+            at += rawLen;
+        }
+    }
+    return payload.size() == payloadRaw;
+}
+
+static void testSidecarChecksum() {
+    // ---- the checksum itself: standard CRC-32, zlib-compatible -----------
+    CHECK(crc32(0, "", 0) == 0x00000000u);
+    CHECK(crc32(0, "123456789", 9) == 0xCBF43926u);
+    {
+        const char* fox = "The quick brown fox jumps over the lazy dog";
+        const size_t n = std::strlen(fox);
+        CHECK(crc32(0, fox, n) == 0x414FA339u);
+        CHECK(crc32(crc32(0, fox, 7), fox + 7, n - 7)
+              == crc32(0, fox, n));              // chaining == one shot
+    }
+
+    // ---- a fresh rip writes USRRIP03 with verifiable per-entry CRCs ------
+    const fs::path base = fs::temp_directory_path() / "usbutils_ripcrc";
+    fs::remove_all(base);
+    fs::create_directories(base);
+    const fs::path iso = base / "game.iso";
+
+    // BIG.PSS: compressible ADPCM-like pattern. NOISE.PSS: pseudo-random —
+    // its backup payload is a stored block, so flipping a byte in it
+    // changes exactly one decoded byte (a flipped LZSS byte could fail
+    // decoding before the CRC gets a chance to speak).
+    std::vector<uint8_t> big(1024 * 1024 + 300 * 1024);
+    for (size_t i = 0; i < big.size(); ++i) {
+        const size_t frame = i / 16, off = i % 16;
+        big[i] = (frame % 4 == 3) ? 0
+                : static_cast<uint8_t>((off * 7 + (frame & 0xFF)) & 0xFF);
+    }
+    std::vector<uint8_t> noise(512 * 1024);
+    uint32_t x = 555777333u;
+    for (auto& b : noise)
+        b = static_cast<uint8_t>((x = x * 1664525u + 1013904223u) >> 24);
+    writeRipIso(iso, "SLUS_202.65", {{"BIG.PSS", big}, {"NOISE.PSS", noise}});
+
+    InstallOptions opt;
+    opt.gameName = "Crc Game";
+    const InstallResult ir = installIso(iso.string(), base.string(), opt);
+    CHECK(ir.ok);
+    if (!ir.ok) { fs::remove_all(base); return; }
+    const std::string id = ir.idHex, serial = "SLUS_202.65";
+    const fs::path rip = base / (chunkFileName(id, serial, 0) + ".rip");
+
+    std::string err;
+    auto videos = scanVideos(base.string(), id, serial, 1, &err);
+    CHECK(err.empty());
+    CHECK(videos.size() == 2);
+    if (videos.size() != 2) { fs::remove_all(base); return; }
+
+    std::vector<VideoEntry> noiseSel;
+    uint64_t noiseOff = 0;
+    for (const auto& v : videos)
+        if (v.path == "MOVIES\\NOISE.PSS") {
+            noiseSel.push_back(v);
+            noiseOff = v.offset;
+        }
+    CHECK(noiseSel.size() == 1);
+    if (noiseSel.size() != 1) { fs::remove_all(base); return; }
+
+    CHECK(ripVideos(base.string(), id, serial, 1, noiseSel, true).ok);
+    CHECK(fs::exists(rip));
+
+    // v3 layout: 20-byte header, 20-byte records, block payload
+    std::vector<uint8_t> sc = readFileBytes(rip);
+    CHECK(sc.size() > 20 + 20 + noise.size());
+    if (sc.size() <= 20 + 20 + noise.size()) { fs::remove_all(base); return; }
+    CHECK(std::memcmp(sc.data(), "USRRIP03", 8) == 0);
+    uint32_t count = 0;
+    uint64_t payloadRaw = 0;
+    std::memcpy(&count, sc.data() + 8, 4);
+    std::memcpy(&payloadRaw, sc.data() + 12, 8);
+    CHECK(count == 1);
+    CHECK(payloadRaw == noise.size());
+    uint64_t recOffset = 0, recSize = 0;
+    uint32_t recCrc = 0;
+    std::memcpy(&recOffset, sc.data() + 20, 8);
+    std::memcpy(&recSize, sc.data() + 28, 8);
+    std::memcpy(&recCrc, sc.data() + 36, 4);
+    CHECK(recOffset == noiseOff);
+    CHECK(recSize == noise.size());
+
+    std::vector<uint8_t> payload;
+    CHECK(decodeBlockPayload(sc, 20 + 20, payloadRaw, payload));
+    if (payload.size() != noise.size()) { fs::remove_all(base); return; }
+    CHECK(std::memcmp(payload.data(), noise.data(), noise.size()) == 0);
+
+    // the CRC definition: the record's own 16 bytes, then the payload
+    {
+        uint32_t crc = crc32(0, sc.data() + 20, 16);
+        crc = crc32(crc, payload.data(), payload.size());
+        CHECK(crc == recCrc);
+    }
+
+    // ---- a flipped payload byte: restore refuses BEFORE writing ----------
+    // (the sidecar survives for recovery; the media stay blanked — a
+    //  blanked game still boots, a half-restored one may not)
+    // 40 = header + one record; +4 skips the stored-block header.
+    sc[40 + 4 + 200] ^= 0x40;
+    {
+        FILE* f = std::fopen(rip.string().c_str(), "wb");
+        CHECK(f != nullptr);
+        if (f) {
+            CHECK(std::fwrite(sc.data(), 1, sc.size(), f) == sc.size());
+            std::fclose(f);
+        }
+    }
+    {
+        const RipResult rb = restoreVideos(base.string(), id, serial, 1);
+        CHECK(!rb.ok);
+        CHECK(rb.error.find("CRC32") != std::string::npos);
+        CHECK(rb.error.find("NOISE.PSS") != std::string::npos);
+        CHECK(fs::exists(rip));
+        GameStream gs;                        // nothing was written back
+        CHECK(gs.open(base.string(), id, serial, 1));
+        uint8_t head[64] = {};
+        CHECK(gs.read(noiseOff, head, sizeof(head)) == sizeof(head));
+        bool stillZero = true;
+        for (uint8_t b : head) stillZero = stillZero && b == 0;
+        CHECK(stillZero);
+    }
+
+    // ---- a flipped offset bit in the index: caught by the CRC seed -------
+    // (the size sum still matches payloadRaw, so only the per-entry
+    //  checksum over the record bytes can see this corruption)
+    sc[40 + 4 + 200] ^= 0x40;                 // undo the payload flip
+    sc[20 + 1] ^= 0x08;                       // a bit inside the offset
+    {
+        FILE* f = std::fopen(rip.string().c_str(), "wb");
+        CHECK(f != nullptr);
+        if (f) {
+            CHECK(std::fwrite(sc.data(), 1, sc.size(), f) == sc.size());
+            std::fclose(f);
+        }
+    }
+    {
+        const RipResult rb = restoreVideos(base.string(), id, serial, 1);
+        CHECK(!rb.ok);
+        CHECK(rb.error.find("CRC32") != std::string::npos);
+        CHECK(rb.error.find("stream offset") != std::string::npos);
+        CHECK(fs::exists(rip));
+        GameStream gs;
+        CHECK(gs.open(base.string(), id, serial, 1));
+        uint8_t head[64] = {};
+        CHECK(gs.read(noiseOff, head, sizeof(head)) == sizeof(head));
+        bool stillZero = true;
+        for (uint8_t b : head) stillZero = stillZero && b == 0;
+        CHECK(stillZero);
+    }
+
+    // ---- the repaired backup restores, export byte-identical -------------
+    sc[20 + 1] ^= 0x08;                       // undo the index flip
+    {
+        FILE* f = std::fopen(rip.string().c_str(), "wb");
+        CHECK(f != nullptr);
+        if (f) {
+            CHECK(std::fwrite(sc.data(), 1, sc.size(), f) == sc.size());
+            std::fclose(f);
+        }
+    }
+    {
+        const RipResult rg = restoreVideos(base.string(), id, serial, 1);
+        CHECK(rg.ok);
+        CHECK(rg.rippedCount == 1);
+        CHECK(!fs::exists(rip));
+        UlCfg cfg;
+        CHECK(cfg.load(base.string()));
+        CHECK(exportIso(base.string(), cfg.records[0],
+                        (base / "back.iso").string()));
+        CHECK(filesEqual(iso, base / "back.iso"));
+    }
+
+    // ---- a corrupt old sidecar is not carried into a new backup ----------
+    // (the rewrite re-reads the old payload; when a stored v3 CRC no
+    //  longer matches its bytes, the rip is refused instead of blessing
+    //  the corrupted data with freshly computed checksums)
+    {
+        // rip NOISE with a backup, then flip one stored payload byte
+        videos = scanVideos(base.string(), id, serial, 1, &err);
+        std::vector<VideoEntry> n5;
+        for (const auto& v : videos)
+            if (v.path == "MOVIES\\NOISE.PSS") n5.push_back(v);
+        CHECK(ripVideos(base.string(), id, serial, 1, n5, true).ok);
+        sc = readFileBytes(rip);
+        sc[40 + 4 + 100] ^= 0x20;
+        {
+            FILE* f = std::fopen(rip.string().c_str(), "wb");
+            CHECK(f != nullptr);
+            if (f) {
+                CHECK(std::fwrite(sc.data(), 1, sc.size(), f) == sc.size());
+                std::fclose(f);
+            }
+        }
+
+        // the incremental rip of BIG must fail and keep the sidecar
+        videos = scanVideos(base.string(), id, serial, 1, &err);
+        std::vector<VideoEntry> b5;
+        for (const auto& v : videos)
+            if (v.path == "MOVIES\\BIG.PSS") b5.push_back(v);
+        const RipResult rr = ripVideos(base.string(), id, serial, 1, b5, true);
+        CHECK(!rr.ok);
+        CHECK(rr.error.find("corrupt") != std::string::npos);
+        CHECK(fs::exists(rip));
+
+        // repaired, the same incremental rip succeeds and both entries
+        // restore to a byte-identical export
+        sc = readFileBytes(rip);
+        sc[40 + 4 + 100] ^= 0x20;
+        {
+            FILE* f = std::fopen(rip.string().c_str(), "wb");
+            CHECK(f != nullptr);
+            if (f) {
+                CHECK(std::fwrite(sc.data(), 1, sc.size(), f) == sc.size());
+                std::fclose(f);
+            }
+        }
+        CHECK(ripVideos(base.string(), id, serial, 1, b5, true).ok);
+        const RipResult rg = restoreVideos(base.string(), id, serial, 1);
+        CHECK(rg.ok);
+        CHECK(rg.rippedCount == 2);
+        CHECK(!fs::exists(rip));
+        UlCfg cfg;
+        CHECK(cfg.load(base.string()));
+        CHECK(exportIso(base.string(), cfg.records[0],
+                        (base / "back3.iso").string()));
+        CHECK(filesEqual(iso, base / "back3.iso"));
+    }
+
+    // ---- an incremental rip upgrades a v2 sidecar to v3, checksums and all
+    // BIG blanked without backup + a hand-written v2 sidecar holding its
+    // originals; ripping everything else with a backup must carry BIG's
+    // bytes across and give the carried entry a verifiable CRC.
+    uint64_t bigOff = 0;
+    {
+        videos = scanVideos(base.string(), id, serial, 1, &err);
+        std::vector<VideoEntry> bsel;
+        for (const auto& v : videos)
+            if (v.path == "MOVIES\\BIG.PSS") { bsel.push_back(v); bigOff = v.offset; }
+        CHECK(ripVideos(base.string(), id, serial, 1, bsel, false).ok);
+    }
+    {
+        FILE* f = std::fopen(rip.string().c_str(), "wb");
+        CHECK(f != nullptr);
+        if (f) {
+            unsigned char hdr[20] = {
+                'U','S','R','R','I','P','0','2', 0x01, 0, 0, 0 };
+            const uint64_t pr = big.size();
+            std::memcpy(hdr + 12, &pr, 8);
+            CHECK(std::fwrite(hdr, 1, sizeof(hdr), f) == sizeof(hdr));
+            const uint64_t rec[2] = {bigOff, big.size()};
+            CHECK(std::fwrite(rec, 8, 2, f) == 2);
+            uint64_t left = big.size();       // one stored block per MiB
+            size_t off = 0;
+            while (left > 0) {
+                const uint32_t blen = static_cast<uint32_t>(
+                    std::min<uint64_t>(kLzBlockSize, left));
+                CHECK(std::fwrite(&blen, 4, 1, f) == 1);
+                CHECK(std::fwrite(big.data() + off, 1, blen, f) == blen);
+                off += blen;
+                left -= blen;
+            }
+            std::fclose(f);
+        }
+    }
+    {
+        videos = scanVideos(base.string(), id, serial, 1, &err);
+        std::vector<VideoEntry> rest;
+        for (const auto& v : videos)
+            if (v.path != "MOVIES\\BIG.PSS") rest.push_back(v);
+        CHECK(ripVideos(base.string(), id, serial, 1, rest, true).ok);
+    }
+    {
+        sc = readFileBytes(rip);
+        CHECK(std::memcmp(sc.data(), "USRRIP03", 8) == 0);
+        std::memcpy(&count, sc.data() + 8, 4);
+        std::memcpy(&payloadRaw, sc.data() + 12, 8);
+        CHECK(count == 2);
+        CHECK(payloadRaw == big.size() + noise.size());
+        uint64_t e0off = 0, e0size = 0, e1off = 0, e1size = 0;
+        uint32_t e0crc = 0, e1crc = 0;
+        std::memcpy(&e0off, sc.data() + 20, 8);
+        std::memcpy(&e0size, sc.data() + 28, 8);
+        std::memcpy(&e0crc, sc.data() + 36, 4);
+        std::memcpy(&e1off, sc.data() + 40, 8);
+        std::memcpy(&e1size, sc.data() + 48, 8);
+        std::memcpy(&e1crc, sc.data() + 56, 4);
+        CHECK(e0off == bigOff);
+        CHECK(e0size == big.size());
+        CHECK(e1off == noiseOff);
+        CHECK(e1size == noise.size());
+
+        // both CRCs verify against the definition — entry 0's bytes were
+        // carried over from the v2 sidecar, entry 1's came from the stream
+        CHECK(decodeBlockPayload(sc, 20 + 2 * 20, payloadRaw, payload));
+        if (payload.size() != payloadRaw) { fs::remove_all(base); return; }
+        CHECK(std::memcmp(payload.data(), big.data(), big.size()) == 0);
+        CHECK(std::memcmp(payload.data() + big.size(),
+                          noise.data(), noise.size()) == 0);
+        uint32_t c0 = crc32(0, sc.data() + 20, 16);
+        c0 = crc32(c0, payload.data(), big.size());
+        CHECK(c0 == e0crc);
+        uint32_t c1 = crc32(0, sc.data() + 40, 16);
+        c1 = crc32(c1, payload.data() + big.size(), noise.size());
+        CHECK(c1 == e1crc);
+    }
+    {
+        const RipResult rg = restoreVideos(base.string(), id, serial, 1);
+        CHECK(rg.ok);
+        CHECK(rg.rippedCount == 2);
+        CHECK(!fs::exists(rip));
+        UlCfg cfg;
+        CHECK(cfg.load(base.string()));
+        CHECK(exportIso(base.string(), cfg.records[0],
+                        (base / "back2.iso").string()));
+        CHECK(filesEqual(iso, base / "back2.iso"));
     }
 
     fs::remove_all(base);
@@ -2742,6 +3161,7 @@ int main() {
     testVideoRip();
     testAudioRip();
     testSidecarCompression();
+    testSidecarChecksum();
     testIoprpLocate();
     testPs2Load();
     testGameOps();

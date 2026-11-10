@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 /*
- * Block-LZSS codec for the media-rip sidecar backup (USRRIP02 payload).
+ * Block-LZSS codec for the media-rip sidecar backup (USRRIP02/03 payload).
  *
  * The core library has no external dependencies, so this is a small
  * in-house codec instead of zlib. It only has to do two things well:
