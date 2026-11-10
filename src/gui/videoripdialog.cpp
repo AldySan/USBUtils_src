@@ -33,10 +33,14 @@ static QString humanSize(uint64_t b) {
 
 VideoRipDialog::VideoRipDialog(const QString& dir, const QString& gameName,
                                const QString& idHex, const QString& serial,
-                               uint32_t parts, QWidget* parent)
+                               uint32_t parts, Media media, QWidget* parent)
     : QDialog(parent), dir_(dir), idHex_(idHex), serial_(serial),
-      gameName_(gameName), parts_(parts) {
-    setWindowTitle(tr("Videos: %1").arg(gameName_));
+      gameName_(gameName), parts_(parts), media_(media),
+      title_(media == Media::Audio ? tr("Audio") : tr("Videos")),
+      word_(media == Media::Audio ? tr("audio files") : tr("videos")) {
+    setWindowTitle(media == Media::Audio
+                       ? tr("Audio: %1").arg(gameName_)
+                       : tr("Videos: %1").arg(gameName_));
     setModal(true);
     resize(620, 420);
     buildUi();
@@ -46,10 +50,15 @@ VideoRipDialog::VideoRipDialog(const QString& dir, const QString& gameName,
 void VideoRipDialog::buildUi() {
     auto* root = new QVBoxLayout(this);
 
-    auto* intro = new QLabel(tr(
-        "Videos stored on the disc make some games stutter when played from a "
-        "USB drive. Turning a video OFF keeps its space on the drive (the game "
-        "just skips it) and keeps a backup so you can turn it back ON later."),
+    auto* intro = new QLabel(
+        media_ == Media::Audio
+            ? tr("Music, voice and sound effects can take up a lot of room "
+                 "on the drive. Turning an audio file OFF keeps its space "
+                 "(the game plays without it) and keeps a backup so you can "
+                 "turn it back ON later.")
+            : tr("Videos stored on the disc make some games stutter when played from a "
+                 "USB drive. Turning a video OFF keeps its space on the drive (the game "
+                 "just skips it) and keeps a backup so you can turn it back ON later."),
         this);
     intro->setWordWrap(true);
     root->addWidget(intro);
@@ -70,8 +79,8 @@ void VideoRipDialog::buildUi() {
     auto* row = new QHBoxLayout;
     auto* btnAll = new QPushButton(tr("Select all"), this);
     auto* btnNone = new QPushButton(tr("Select none"), this);
-    btnRip_ = new QPushButton(tr("Turn OFF selected videos"), this);
-    btnRestore_ = new QPushButton(tr("Turn all videos back ON"), this);
+    btnRip_ = new QPushButton(tr("Turn OFF selected %1").arg(word_), this);
+    btnRestore_ = new QPushButton(tr("Turn all %1 back ON").arg(word_), this);
     btnClose_ = new QPushButton(tr("Close"), this);
     btnRip_->setEnabled(false);
     btnRestore_->setEnabled(false);
@@ -96,24 +105,32 @@ void VideoRipDialog::buildUi() {
 }
 
 void VideoRipDialog::rescan() {
-    // scanVideos() walks the game's whole ISO tree with one fopen per read
-    // on the USB drive — seconds on big games. Run it off the GUI thread
-    // (same pattern as GameFilesDialog::loadFiles) so the dialog stays
-    // responsive; closeEvent()/reject() already guard the busyJobs_ window.
+    // scanVideos()/scanAudios() walk the game's whole ISO tree with one
+    // fopen per read on the USB drive — seconds on big games. Run it off
+    // the GUI thread (same pattern as GameFilesDialog::loadFiles) so the
+    // dialog stays responsive; closeEvent()/reject() already guard the
+    // busyJobs_ window.
     auto* dlg = new QProgressDialog(
-        tr("Scanning the videos of \"%1\"...").arg(gameName_),
+        media_ == Media::Audio
+            ? tr("Scanning the audio of \"%1\"...").arg(gameName_)
+            : tr("Scanning the videos of \"%1\"...").arg(gameName_),
         QString(), 0, 0, this);
     dlg->setWindowModality(Qt::WindowModal);
     dlg->show();
 
     const QString dir = dir_, idHex = idHex_, serial = serial_;
     const uint32_t parts = parts_;
+    const Media media = media_;
 
     ++busyJobs_;
-    QThread* th = new usbutils::WorkerThread([this, dir, idHex, serial, parts, dlg]() {
+    QThread* th = new usbutils::WorkerThread([this, dir, idHex, serial, parts,
+                                              media, dlg]() {
         std::string err;
-        const auto vids = scanVideos(dir.toStdString(), idHex.toStdString(),
-                                     serial.toStdString(), parts, &err);
+        const auto vids = media == Media::Audio
+            ? scanAudios(dir.toStdString(), idHex.toStdString(),
+                         serial.toStdString(), parts, &err)
+            : scanVideos(dir.toStdString(), idHex.toStdString(),
+                         serial.toStdString(), parts, &err);
         QMetaObject::invokeMethod(this, [this, vids, err, dlg]() {
             --busyJobs_;
             videos_ = vids;
@@ -122,12 +139,20 @@ void VideoRipDialog::rescan() {
             dlg->hide();
             dlg->deleteLater();
             if (!err.empty())
-                QMessageBox::warning(this, tr("Videos"),
+                QMessageBox::warning(this, title_,
                     tr("Could not read this game: %1")
                         .arg(QString::fromStdString(err)));
         }, Qt::QueuedConnection);
     });
     th->start();
+}
+
+uint64_t VideoRipDialog::backupSize() const {
+    return media_ == Media::Audio
+        ? audioBackupSize(dir_.toStdString(), idHex_.toStdString(),
+                          serial_.toStdString())
+        : videoBackupSize(dir_.toStdString(), idHex_.toStdString(),
+                          serial_.toStdString());
 }
 
 void VideoRipDialog::fillTable() {
@@ -159,9 +184,7 @@ void VideoRipDialog::fillTable() {
         st->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
         table_->setItem(row, 3, st);
     }
-    btnRestore_->setEnabled(videoBackupSize(dir_.toStdString(),
-                                            idHex_.toStdString(),
-                                            serial_.toStdString()) > 0);
+    btnRestore_->setEnabled(backupSize() > 0);
 }
 
 void VideoRipDialog::updateInfo() {
@@ -170,11 +193,10 @@ void VideoRipDialog::updateInfo() {
         total += v.size;
         if (v.blanked) off += v.size;
     }
-    const uint64_t backup = videoBackupSize(dir_.toStdString(),
-                                            idHex_.toStdString(),
-                                            serial_.toStdString());
-    QString text = tr("%1 video(s), %2 total. %3 currently turned off.")
+    const uint64_t backup = backupSize();
+    QString text = tr("%1 %2, %3 total. %4 currently turned off.")
                        .arg(videos_.size())
+                       .arg(word_)
                        .arg(humanSize(total))
                        .arg(humanSize(off));
     if (backup > 0)
@@ -201,7 +223,7 @@ void VideoRipDialog::runJob(const QString& runningText,
                                 const std::function<bool()>&)>& job,
                             const std::function<void(const RipResult&)>& onDone) {
     auto* dlg = new QProgressDialog(runningText, tr("Cancel"), 0, 100, this);
-    dlg->setWindowTitle(tr("Videos"));
+    dlg->setWindowTitle(title_);
     dlg->setWindowModality(Qt::WindowModal);
     dlg->setAutoClose(false);
     dlg->setAutoReset(false);
@@ -240,68 +262,79 @@ void VideoRipDialog::runJob(const QString& runningText,
 void VideoRipDialog::ripSelected() {
     const std::vector<VideoEntry> selection = collectChecked();
     if (selection.empty()) {
-        QMessageBox::information(this, tr("Videos"),
-                                 tr("Tick at least one video first."));
+        QMessageBox::information(this, title_,
+                                 tr("Tick at least one %1 first.").arg(word_));
         return;
     }
     uint64_t bytes = 0;
     for (const VideoEntry& v : selection) bytes += v.size;
-    if (QMessageBox::question(this, tr("Turn videos off"),
-            tr("Turn OFF %1 video(s) (%2)?\n\n"
+    if (QMessageBox::question(this, tr("Turn %1 off").arg(word_),
+            tr("Turn OFF %1 %2 (%3)?\n\n"
                "A backup is written next to the game (same size as the "
-               "videos), so you can undo this later.")
-                .arg(selection.size()).arg(humanSize(bytes)))
+               "media), so you can undo this later.")
+                .arg(selection.size()).arg(word_).arg(humanSize(bytes)))
             != QMessageBox::Yes)
         return;
 
-    runJob(tr("Turning videos off..."),
+    runJob(tr("Turning %1 off...").arg(word_),
         [this, selection](const ProgressFn& prog,
                           const std::function<bool()>& cancel) {
-            return ripVideos(dir_.toStdString(), idHex_.toStdString(),
-                             serial_.toStdString(), parts_, selection,
-                             /*makeBackup*/ true, prog, cancel);
+            return media_ == Media::Audio
+                ? ripAudios(dir_.toStdString(), idHex_.toStdString(),
+                            serial_.toStdString(), parts_, selection,
+                            /*makeBackup*/ true, prog, cancel)
+                : ripVideos(dir_.toStdString(), idHex_.toStdString(),
+                            serial_.toStdString(), parts_, selection,
+                            /*makeBackup*/ true, prog, cancel);
         },
         [this](const RipResult& r) {
             if (r.ok)
-                QMessageBox::information(this, tr("Videos"),
-                    tr("Turned off %1 video(s) (%2).")
+                QMessageBox::information(this, title_,
+                    tr("Turned off %1 %2 (%3).")
                         .arg(r.rippedCount)
+                        .arg(word_)
                         .arg(humanSize(r.blankedBytes)));
             else if (r.error != "cancelled")
-                QMessageBox::critical(this, tr("Videos"),
-                    tr("Could not turn videos off: %1")
+                QMessageBox::critical(this, title_,
+                    tr("Could not turn %1 off: %2")
+                        .arg(word_)
                         .arg(QString::fromStdString(r.error)));
         });
 }
 
 void VideoRipDialog::restoreAll() {
-    if (QMessageBox::question(this, tr("Turn videos back on"),
-            tr("Restore every backed-up video of this game?"))
+    if (QMessageBox::question(this, tr("Turn %1 back on").arg(word_),
+            tr("Restore every backed-up %1 of this game?").arg(word_))
             != QMessageBox::Yes)
         return;
 
-    runJob(tr("Turning videos back on..."),
+    runJob(tr("Turning %1 back on...").arg(word_),
         [this](const ProgressFn& prog,
                const std::function<bool()>& cancel) {
-            return restoreVideos(dir_.toStdString(), idHex_.toStdString(),
-                                 serial_.toStdString(), parts_, prog, cancel);
+            return media_ == Media::Audio
+                ? restoreAudios(dir_.toStdString(), idHex_.toStdString(),
+                                serial_.toStdString(), parts_, prog, cancel)
+                : restoreVideos(dir_.toStdString(), idHex_.toStdString(),
+                                serial_.toStdString(), parts_, prog, cancel);
         },
         [this](const RipResult& r) {
             if (r.ok)
-                QMessageBox::information(this, tr("Videos"),
-                    tr("Restored %1 video(s) (%2). The backup was removed.")
+                QMessageBox::information(this, title_,
+                    tr("Restored %1 %2 (%3). The backup was removed.")
                         .arg(r.rippedCount)
+                        .arg(word_)
                         .arg(humanSize(r.blankedBytes)));
             else if (r.error != "cancelled")
-                QMessageBox::critical(this, tr("Videos"),
-                    tr("Could not restore videos: %1")
+                QMessageBox::critical(this, title_,
+                    tr("Could not restore %1: %2")
+                        .arg(word_)
                         .arg(QString::fromStdString(r.error)));
         });
 }
 
 void VideoRipDialog::closeEvent(QCloseEvent* ev) {
     if (busyJobs_ > 0) {
-        QMessageBox::information(this, tr("Videos"),
+        QMessageBox::information(this, title_,
             tr("Please wait: an operation is still running (or cancel it)."));
         ev->ignore();
         return;
@@ -314,7 +347,7 @@ void VideoRipDialog::closeEvent(QCloseEvent* ev) {
 // be destroyed while a rip/restore worker thread still posts events to it.
 void VideoRipDialog::reject() {
     if (busyJobs_ > 0) {
-        QMessageBox::information(this, tr("Videos"),
+        QMessageBox::information(this, title_,
             tr("Please wait: an operation is still running (or cancel it)."));
         return;
     }
