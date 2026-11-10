@@ -844,17 +844,24 @@ bool applyModel(GameStream& s, Model& m, const std::string& dir,
     UlCfg cfg;
     if (cfg.load(dir)) {
         const size_t idx = cfg.findByIdSerial(idHex, serial);
-        if (idx != SIZE_MAX) {
-            cfg.records[idx].parts = newParts;
-            if (!cfg.save()) {
-                err = "the image was shrunk but ul.cfg could not be "
-                      "updated — fix the parts field of the game record";
-                res.oldBytes = m.streamSize;
-                res.newBytes = finalBytes;
-                res.oldParts = oldParts;
-                res.newParts = newParts;
-                return false;
-            }
+        if (idx == SIZE_MAX) {
+            err = "the image was shrunk but the game's ul.cfg record "
+                  "disappeared — fix its parts field";
+            res.oldBytes = m.streamSize;
+            res.newBytes = finalBytes;
+            res.oldParts = oldParts;
+            res.newParts = newParts;
+            return false;
+        }
+        cfg.records[idx].parts = newParts;
+        if (!cfg.save()) {
+            err = "the image was shrunk but ul.cfg could not be "
+                  "updated — fix the parts field of the game record";
+            res.oldBytes = m.streamSize;
+            res.newBytes = finalBytes;
+            res.oldParts = oldParts;
+            res.newParts = newParts;
+            return false;
         }
     } else {
         err = "the image was shrunk but ul.cfg could not be re-read";
@@ -879,6 +886,7 @@ bool applyModel(GameStream& s, Model& m, const std::string& dir,
     uint64_t phaseDone = 0;
     const uint64_t verifyBase = m.hashBytes + moveBytes;
     ProgressAcc vacc{progress, acc.total, verifyBase};
+    bool readFailed = false;
     const auto verifyEntry = [&](const IsoEntry& e) -> bool {
         if (e.isDir) { ++walkedDirs; return true; }
         Walked& w = walked[e.path];
@@ -890,6 +898,7 @@ bool applyModel(GameStream& s, Model& m, const std::string& dir,
             if (s.read(uint64_t(e.lba) * kSector + (e.size - left),
                        buf.data(), want) != want) {
                 err = "verification failed: cannot read " + e.path;
+                readFailed = true;
                 return false;
             }
             for (size_t i = 0; i < want; ++i) {
@@ -902,8 +911,9 @@ bool applyModel(GameStream& s, Model& m, const std::string& dir,
         }
         return true;
     };
-    if (!walkIso(reader, verifyEntry)) {
-        err = "verification failed: the rewritten image is not readable";
+    if (!walkIso(reader, verifyEntry) || readFailed) {
+        if (!readFailed)
+            err = "verification failed: the rewritten image is not readable";
         res.oldBytes = m.streamSize;
         res.newBytes = finalBytes;
         res.oldParts = oldParts;

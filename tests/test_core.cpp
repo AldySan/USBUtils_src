@@ -16,6 +16,8 @@
  * 12. update: version comparison logic
  * 13. sidecar backup compression: block-LZSS codec round-trips,
  *     USRRIP02 writer, USRRIP01 reader, incremental rips, corruption
+ * 14. iso shrink: relink/compact/truncate round-trip, chunk-file and
+ *     ul.cfg parts reduction, rip-backup interplay, refusal paths
  */
 #include "ulcfg.h"
 #include "ulid.h"
