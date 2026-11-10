@@ -2531,6 +2531,201 @@ static void testShrinkRefusals() {
     fs::remove_all(base);
 }
 
+static void testShrinkCfgFailure() {
+    const fs::path base = fs::temp_directory_path() / "usbutils_shrink_cfg";
+    fs::remove_all(base);
+    fs::create_directories(base);
+    const fs::path iso = base / "game.iso";
+    writeShrinkIso(iso, "SLUS_206.44");
+
+    const std::string name = "Cfg Fail";
+    const std::string id = gameIdHex(name), serial = "SLUS_206.44";
+    {
+        // hand-split the 47-sector image into 10-sector chunk files
+        FILE* f = std::fopen(iso.string().c_str(), "rb");
+        CHECK(f != nullptr);
+        std::vector<uint8_t> buf(10ull * 2048);
+        for (uint32_t part = 0; part < 5; ++part) {
+            const size_t want = part < 4
+                ? buf.size() : size_t(47ull * 2048 - 4ull * buf.size());
+            CHECK(std::fread(buf.data(), 1, want, f) == want);
+            FILE* o = std::fopen(
+                (base / chunkFileName(id, serial, part)).string().c_str(),
+                "wb");
+            std::fwrite(buf.data(), 1, want, o);
+            std::fclose(o);
+        }
+        std::fclose(f);
+
+        UlCfg cfg;
+        cfg.dir = base.string();
+        UlCfgRecord rec;
+        rec.setName(name);
+        rec.setSerial(serial);
+        rec.parts = 5;
+        rec.media = kMediaDvd;
+        cfg.records = {rec};
+        CHECK(cfg.save());
+    }
+
+    // ul.cfg cannot be written (directory read-only): the rewrite must
+    // stop after the cut and keep every chunk file on disk
+    fs::permissions(base, fs::perms::owner_read | fs::perms::owner_exec
+                              | fs::perms::group_read | fs::perms::group_exec
+                              | fs::perms::others_read | fs::perms::others_exec);
+    const ShrinkResult r = shrinkGame(base.string(), id, serial, 5, false);
+    fs::permissions(base, fs::perms::owner_all);
+    CHECK(!r.ok);
+    CHECK(r.error.find("ul.cfg") != std::string::npos);
+    CHECK(r.error.find("still on disk") != std::string::npos);
+    CHECK(r.newBytes == 36ull * 2048);
+    CHECK(r.newParts == 4);
+    CHECK(r.oldParts == 5);
+
+    // the loader's chunk files are all still there — the game keeps booting
+    for (uint32_t i = 0; i < 5; ++i)
+        CHECK(fs::exists(base / chunkFileName(id, serial, i)));
+
+    // the user fixes the parts field by hand and drops the surplus file
+    {
+        UlCfg cfg;
+        CHECK(cfg.load(base.string()));
+        CHECK(cfg.records.size() == 1 && cfg.records[0].parts == 5);
+        cfg.records[0].parts = 4;
+        CHECK(cfg.save());
+        CHECK(fs::remove(base / chunkFileName(id, serial, 4)));
+    }
+
+    GameStream s;
+    CHECK(s.open(base.string(), id, serial, 4));
+    CHECK(s.size() == 36ull * 2048);
+    const auto files = walkGameFiles(s);
+    CHECK(files.size() == 7);
+    const auto d1 = readRange(
+        s, uint64_t(files.at("DUMMIES\\DUP1.BIN").lba) * 2048, 2 * 2048);
+    const auto d2 = readRange(
+        s, uint64_t(files.at("DUMMIES\\DUP2.BIN").lba) * 2048, 2 * 2048);
+    CHECK(d1.size() == 2 * 2048 && d1 == d2);
+
+    // ---- the record-disappeared variant stages the real ordering ------
+    // (a writable directory lets the pre-fix code DELETE the surplus
+    // chunks before it notices the record is gone; with the fix every
+    // chunk file is still on disk when the error is reported)
+    {
+        const fs::path base2 = fs::temp_directory_path() / "usbutils_shrink_cfg2";
+        fs::remove_all(base2);
+        fs::create_directories(base2);
+        const fs::path iso2 = base2 / "game.iso";
+        writeShrinkIso(iso2, "SLUS_206.45");
+
+        const std::string name2 = "Cfg Gone";
+        const std::string id2 = gameIdHex(name2), serial2 = "SLUS_206.45";
+        {
+            FILE* f = std::fopen(iso2.string().c_str(), "rb");
+            CHECK(f != nullptr);
+            std::vector<uint8_t> buf(10ull * 2048);
+            for (uint32_t part = 0; part < 5; ++part) {
+                const size_t want = part < 4
+                    ? buf.size() : size_t(47ull * 2048 - 4ull * buf.size());
+                CHECK(std::fread(buf.data(), 1, want, f) == want);
+                FILE* o = std::fopen(
+                    (base2 / chunkFileName(id2, serial2, part)).string().c_str(),
+                    "wb");
+                std::fwrite(buf.data(), 1, want, o);
+                std::fclose(o);
+            }
+            std::fclose(f);
+
+            // ul.cfg that lacks this game's record
+            UlCfg cfg;
+            cfg.dir = base2.string();
+            UlCfgRecord other;
+            other.setName("Other Game");
+            other.setSerial("SLUS_999.99");
+            other.parts = 1;
+            other.media = kMediaDvd;
+            cfg.records = {other};
+            CHECK(cfg.save());
+        }
+
+        const ShrinkResult r2 = shrinkGame(base2.string(), id2, serial2, 5, false);
+        CHECK(!r2.ok);
+        CHECK(r2.error.find("still on disk") != std::string::npos);
+        CHECK(r2.error.find("parts 4") != std::string::npos);
+        for (uint32_t i = 0; i < 5; ++i)
+            CHECK(fs::exists(base2 / chunkFileName(id2, serial2, i)));
+        CHECK(fs::file_size(base2 / chunkFileName(id2, serial2, 3)) == 12288);
+
+        fs::remove_all(base2);
+    }
+
+    fs::remove_all(base);
+}
+
+static void testShrinkDiscardBlocked() {
+    const fs::path base = fs::temp_directory_path() / "usbutils_shrink_disc";
+    fs::remove_all(base);
+    fs::create_directories(base);
+    const fs::path iso = base / "game.iso";
+
+    std::vector<uint8_t> intro(3ull * 2048), logo(2ull * 2048);
+    for (size_t i = 0; i < intro.size(); ++i)
+        intro[i] = uint8_t((i * 13 + 5) & 0xFF);
+    for (size_t i = 0; i < logo.size(); ++i)
+        logo[i] = uint8_t((i * 7 + 9) & 0xFF);
+    writeRipIso(iso, "SLUS_207.88", {{"INTRO.PSS", intro},
+                                     {"LOGO.PSS", logo}});
+
+    InstallOptions opt;
+    opt.gameName = "Discard Blocked";
+    const InstallResult ir = installIso(iso.string(), base.string(), opt);
+    CHECK(ir.ok);
+    if (!ir.ok) { fs::remove_all(base); return; }
+
+    auto vids = scanVideos(base.string(), ir.idHex, ir.serial, ir.parts);
+    CHECK(vids.size() == 2);
+    const RipResult rr = ripVideos(base.string(), ir.idHex, ir.serial,
+                                   ir.parts, vids, /*makeBackup*/ true);
+    CHECK(rr.ok && rr.rippedCount == 2);
+    CHECK(videoBackupSize(base.string(), ir.idHex, ir.serial) > 0);
+
+    // the sidecar cannot be deleted (directory read-only): --discard-backups
+    // must refuse instead of shrinking past a backup it could not remove
+    fs::permissions(base, fs::perms::owner_read | fs::perms::owner_exec
+                              | fs::perms::group_read | fs::perms::group_exec
+                              | fs::perms::others_read | fs::perms::others_exec);
+    const ShrinkResult r = shrinkGame(base.string(), ir.idHex, ir.serial,
+                                      ir.parts, /*discardBackups*/ true);
+    fs::permissions(base, fs::perms::owner_all);
+    CHECK(!r.ok);
+    CHECK(r.error.find("could not be deleted") != std::string::npos);
+
+    // nothing was touched: the sidecar survives, the game still holds
+    // zeros, and the backup still restores byte for byte
+    CHECK(videoBackupSize(base.string(), ir.idHex, ir.serial) > 0);
+    {
+        auto vids2 = scanVideos(base.string(), ir.idHex, ir.serial, ir.parts);
+        CHECK(vids2.size() == 2);
+        size_t blanked = 0;
+        for (const auto& v : vids2)
+            if (v.blanked) ++blanked;
+        CHECK(blanked == 2);
+    }
+    const RipResult un = restoreVideos(base.string(), ir.idHex, ir.serial,
+                                       ir.parts);
+    CHECK(un.ok);
+    {
+        auto vids3 = scanVideos(base.string(), ir.idHex, ir.serial, ir.parts);
+        CHECK(vids3.size() == 2);
+        bool anyBlanked = false;
+        for (const auto& v : vids3)
+            anyBlanked = anyBlanked || v.blanked;
+        CHECK(!anyBlanked);
+    }
+
+    fs::remove_all(base);
+}
+
 int main() {
     std::printf("== USBUtils core tests ==\n");
     testCrcId();
@@ -2559,6 +2754,8 @@ int main() {
     testShrinkParts();
     testShrinkRipInterplay();
     testShrinkRefusals();
+    testShrinkCfgFailure();
+    testShrinkDiscardBlocked();
     std::printf(g_failed ? "\n%d FAILURE(S)\n" : "\nALL TESTS PASSED\n", g_failed);
     return g_failed ? 1 : 0;
 }
