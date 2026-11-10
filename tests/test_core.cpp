@@ -72,16 +72,24 @@ static size_t putDirRecord(std::vector<uint8_t>& dir, size_t off,
 
 /// Build a minimal ISO9660 image with SYSTEM.CNF, a MOVIES directory
 /// holding INTRO.PSS, and an IOPRP300.IMG — enough structure to exercise
-/// the walker, the video ripper and the DNAS locator.
+/// the walker, the video ripper and the DNAS locator. With `withAudio`, an
+/// AUDIO directory (MUSIC.VAG + SOUND.ADS) is appended after the IOPRP
+/// image for the audio ripper.
 static void writeTestIso(const fs::path& p, const std::string& serial,
-                         uint64_t payloadBytes, bool withExtras = true) {
+                         uint64_t payloadBytes, bool withExtras = true,
+                         bool withAudio = false) {
     const uint32_t sector = 2048;
     const uint32_t pssLba = 22;
     const uint32_t pssSize = 3 * sector;
     const uint32_t ioprpLba = 25;
     const uint32_t ioprpSize = 256;
+    const uint32_t audioDirLba = 26;
+    const uint32_t vagLba = 27, vagSize = 2 * sector;
+    const uint32_t adsLba = 29, adsSize = sector;
+    uint32_t dataEnd = withExtras ? ioprpLba : 21;
+    if (withAudio) dataEnd = adsLba + 1;
     const uint32_t totalSectors =
-        (withExtras ? ioprpLba : 21) +
+        dataEnd +
         static_cast<uint32_t>((payloadBytes + sector - 1) / sector) + 1;
 
     std::vector<uint8_t> img(16 * sector, 0);
@@ -120,6 +128,8 @@ static void writeTestIso(const fs::path& p, const std::string& serial,
         off += putDirRecord(dir, off, 21, sector, 2, "MOVIES");
         off += putDirRecord(dir, off, ioprpLba, ioprpSize, 0, "IOPRP300.IMG;1");
     }
+    if (withAudio)
+        off += putDirRecord(dir, off, audioDirLba, sector, 2, "AUDIO");
     img.insert(img.end(), dir.begin(), dir.end());
 
     // sector 19 empty, sector 20: SYSTEM.CNF
@@ -152,6 +162,30 @@ static void writeTestIso(const fs::path& p, const std::string& serial,
         img.insert(img.end(), ioprp.begin(), ioprp.end());
     } else {
         img.resize(ioprpLba * sector, 0);      // keep layout offsets stable
+    }
+
+    if (withAudio) {
+        // sector 26: AUDIO directory
+        img.resize(audioDirLba * sector, 0);
+        std::vector<uint8_t> adir(sector, 0);
+        size_t aoff = 0;
+        aoff += putDirRecord(adir, aoff, audioDirLba, sector, 2, std::string(1, '\0'));
+        aoff += putDirRecord(adir, aoff, rootLba, rootSize, 2, std::string(1, '\1'));
+        aoff += putDirRecord(adir, aoff, vagLba, vagSize, 0, "MUSIC.VAG;1");
+        aoff += putDirRecord(adir, aoff, adsLba, adsSize, 0, "SOUND.ADS;1");
+        img.insert(img.end(), adir.begin(), adir.end());
+
+        // sectors 27-28: music payload
+        std::vector<uint8_t> vag(vagSize);
+        for (size_t i = 0; i < vag.size(); ++i)
+            vag[i] = static_cast<uint8_t>((i * 7 + 11) & 0xFF);
+        img.insert(img.end(), vag.begin(), vag.end());
+
+        // sector 29: sound-effect payload
+        std::vector<uint8_t> ads(adsSize);
+        for (size_t i = 0; i < ads.size(); ++i)
+            ads[i] = static_cast<uint8_t>((i * 5 + 3) & 0xFF);
+        img.insert(img.end(), ads.begin(), ads.end());
     }
 
     // trailing generic payload (padded to a full sector like real ISOs,
@@ -626,6 +660,111 @@ static void testVideoRip() {
         CHECK(v2.size() == 1);
         CHECK(!v2[0].hasBackup);      // clamped to zero entries
         fs::remove(rip);
+    }
+
+    fs::remove_all(base);
+}
+
+static void testAudioRip() {
+    const fs::path base = fs::temp_directory_path() / "usbutils_arip";
+    fs::remove_all(base);
+    fs::create_directories(base);
+    const fs::path iso = base / "game.iso";
+    writeTestIso(iso, "SLUS_202.65", 2048 * 2, true, /*withAudio*/ true);
+
+    InstallOptions opt;
+    opt.gameName = "Audio Game";
+    const InstallResult r = installIso(iso.string(), base.string(), opt);
+    CHECK(r.ok);
+    if (!r.ok) { fs::remove_all(base); return; }
+    const std::string id = r.idHex, serial = "SLUS_202.65";
+    const std::string rip = chunkFileName(id, serial, 0) + ".rip";
+    const std::string arip = chunkFileName(id, serial, 0) + ".arip";
+
+    // ---- scan -----------------------------------------------------------
+    std::string err;
+    auto audios = scanAudios(base.string(), id, serial, 1, &err);
+    CHECK(err.empty());
+    CHECK(audios.size() == 2);
+    if (audios.size() == 2) {
+        CHECK(audios[0].path == "AUDIO\\MUSIC.VAG");
+        CHECK(audios[0].offset == 27ull * 2048);
+        CHECK(audios[0].size == 2 * 2048);
+        CHECK(!audios[0].blanked);
+        CHECK(audios[1].path == "AUDIO\\SOUND.ADS");
+        CHECK(audios[1].offset == 29ull * 2048);
+        CHECK(audios[1].size == 2048);
+        CHECK(!audios[1].blanked);
+    }
+
+    // the video scan is unaffected by the audio feature
+    auto videos = scanVideos(base.string(), id, serial, 1, &err);
+    CHECK(err.empty());
+    CHECK(videos.size() == 1);
+    CHECK(videos[0].path == "MOVIES\\INTRO.PSS");
+
+    // ---- partial rip: MUSIC.VAG only, with backup -------------------------
+    const RipResult rr = ripAudios(base.string(), id, serial, 1,
+                                   {audios[0]}, true);
+    CHECK(rr.ok);
+    CHECK(rr.rippedCount == 1);
+    CHECK(rr.blankedBytes == 2 * 2048);
+    CHECK(rr.backupBytes == 2 * 2048);
+    CHECK(fs::exists(base / arip));
+    CHECK(!fs::exists(base / rip));          // video sidecar untouched
+    {
+        GameStream s;
+        CHECK(s.open(base.string(), id, serial, 1));
+        uint8_t vag[16] = {1};
+        CHECK(s.read(27ull * 2048, vag, sizeof(vag)) == sizeof(vag));
+        bool zeroed = true;
+        for (uint8_t b : vag) if (b != 0) zeroed = false;
+        CHECK(zeroed);                       // MUSIC.VAG blanked
+        uint8_t ads[2] = {};
+        CHECK(s.read(29ull * 2048, ads, sizeof(ads)) == sizeof(ads));
+        CHECK(ads[0] == ((0 * 5 + 3) & 0xFF) && ads[1] == ((1 * 5 + 3) & 0xFF));
+        uint8_t pss[2] = {};
+        CHECK(s.read(22ull * 2048, pss, sizeof(pss)) == sizeof(pss));
+        CHECK(pss[0] == ((0 * 13 + 5) & 0xFF));   // video untouched
+    }
+
+    // rescan reports the state
+    audios = scanAudios(base.string(), id, serial, 1, &err);
+    CHECK(err.empty());
+    CHECK(audios.size() == 2);
+    CHECK(audios[0].blanked);
+    CHECK(audios[0].hasBackup);
+    CHECK(!audios[1].blanked);
+
+    // ---- video and audio rips coexist -------------------------------------
+    videos = scanVideos(base.string(), id, serial, 1, &err);
+    CHECK(ripVideos(base.string(), id, serial, 1, videos, true).ok);
+    CHECK(fs::exists(base / rip));
+    CHECK(fs::exists(base / arip));
+
+    // ---- restore audio; the video rip survives ----------------------------
+    const RipResult rv = restoreAudios(base.string(), id, serial, 1);
+    CHECK(rv.ok);
+    CHECK(rv.rippedCount == 1);
+    CHECK(!fs::exists(base / arip));         // audio backup consumed
+    CHECK(fs::exists(base / rip));           // video backup still there
+    {
+        GameStream s;
+        CHECK(s.open(base.string(), id, serial, 1));
+        uint8_t vag[2] = {};
+        CHECK(s.read(27ull * 2048, vag, sizeof(vag)) == sizeof(vag));
+        CHECK(vag[0] == ((0 * 7 + 11) & 0xFF) && vag[1] == ((1 * 7 + 11) & 0xFF));
+    }
+
+    // ---- restore video, then export must be byte-identical ----------------
+    CHECK(restoreVideos(base.string(), id, serial, 1).ok);
+    CHECK(!fs::exists(base / rip));
+    {
+        UlCfg cfg;
+        CHECK(cfg.load(base.string()));
+        CHECK(exportIso(base.string(), cfg.records[0],
+                        (base / "back.iso").string()));
+        CHECK(filesEqual(iso, base / "back.iso"));
     }
 
     fs::remove_all(base);
@@ -1410,6 +1549,7 @@ int main() {
     testRenameSafety();
     testInstallCancel();
     testVideoRip();
+    testAudioRip();
     testIoprpLocate();
     testPs2Load();
     testGameOps();
