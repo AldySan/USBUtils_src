@@ -2228,7 +2228,14 @@ static void testShrink() {
         CHECK(optl.size() == 2048 && optl[12] == 23);    // optional = copy
     }
 
-    // a second shrink has nothing left to take
+    // a second shrink has nothing left to take — and the analysis must not
+    // count already-relinked copies as reclaimable (uint64 underflow guard)
+    ShrinkInfo again2 = analyzeShrink(base.string(), ir.idHex, ir.serial, 1);
+    CHECK(again2.ok);
+    CHECK(again2.savings() == 0);
+    CHECK(again2.duplicateBytes == 0);
+    CHECK(again2.zeroBytes == 0);
+    CHECK(again2.gapBytes == 0);
     const ShrinkResult again = shrinkGame(base.string(), ir.idHex, ir.serial,
                                           1, false);
     CHECK(again.ok);

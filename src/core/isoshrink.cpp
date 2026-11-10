@@ -523,8 +523,12 @@ bool buildModel(GameStream& s, Model& m, std::string& err,
         for (size_t i = 1; i < g.size(); ++i) {
             if (filesIdentical(s, m.files[g[0]], m.files[g[i]])) {
                 m.files[g[i]].dupOf = g[0];
-                m.duplicateBytes += footprintOf(m.files[g[i]]);
-                ++m.duplicateFiles;
+                // an already-relinked copy shares the canonical's extent —
+                // reclaiming it frees nothing, so it must not be counted
+                if (m.files[g[i]].exts[0].lba != m.files[g[0]].exts[0].lba) {
+                    m.duplicateBytes += footprintOf(m.files[g[i]]);
+                    ++m.duplicateFiles;
+                }
             }
         }
     }
@@ -543,8 +547,10 @@ bool buildModel(GameStream& s, Model& m, std::string& err,
         for (int i : zeros) {
             if (i == anchor) continue;
             m.files[i].zeroAnchor = anchor;
-            m.zeroBytes += footprintOf(m.files[i]);
-            ++m.zeroFiles;
+            if (m.files[i].exts[0].lba != m.files[anchor].exts[0].lba) {
+                m.zeroBytes += footprintOf(m.files[i]);
+                ++m.zeroFiles;
+            }
         }
     }
 
@@ -993,8 +999,9 @@ ShrinkInfo analyzeShrink(const std::string& dir, const std::string& idHex,
     info.zeroFiles      = m.zeroFiles;
     info.finalBytes     = uint64_t(m.finalSectors) * kSector;
     if (info.finalBytes > m.streamSize) info.finalBytes = m.streamSize;
-    info.gapBytes = m.streamSize - info.finalBytes
-                    - m.duplicateBytes - m.zeroBytes;
+    const uint64_t total = info.currentBytes - info.finalBytes;
+    info.gapBytes = total > info.duplicateBytes + info.zeroBytes
+        ? total - info.duplicateBytes - info.zeroBytes : 0;
     info.ok = true;
     return info;
 }

@@ -13,6 +13,7 @@
  *   usbutils audio <index>              -d <dir>
  *   usbutils rip <index>                -d <dir> [--audio] [--all | --only p1,p2] [--no-backup]
  *   usbutils unrip <index>              -d <dir> [--audio]
+ *   usbutils shrink <index>             -d <dir> [--apply] [--discard-backups]
  *   usbutils ps2load <index>            -d <dir>
  *   usbutils ps2load inject <index>     -d <dir> [--elf <PS2LOAD.ELF>]
  *   usbutils ps2load remove <index>     -d <dir>
@@ -38,6 +39,7 @@
 #include "../core/recovery.h"
 #include "../core/dnas.h"
 #include "../core/videorip.h"
+#include "../core/isoshrink.h"
 #include "../core/ps2load.h"
 #include "../core/gameops.h"
 #include "../core/gamedb.h"
@@ -78,6 +80,9 @@ static void usage() {
         "  usbutils audio <index>        -d <dir>   (list in-game audio files)\n"
         "  usbutils rip <index>          -d <dir> [--audio] [--all | --only path,...] [--no-backup]\n"
         "  usbutils unrip <index>        -d <dir> [--audio]   (restore ripped media)\n"
+        "  usbutils shrink <index>        -d <dir> [--apply] [--discard-backups]\n"
+        "                                 (report how much a rebuild would save;\n"
+        "                                  --apply rewrites the game in place)\n"
         "  usbutils ps2load <index>       -d <dir>   (show injection status)\n"
         "  usbutils ps2load inject <index> -d <dir> [--elf <PS2LOAD.ELF>]\n"
         "  usbutils ps2load remove <index> -d <dir>   (undo injection)\n"
@@ -153,6 +158,7 @@ struct Args {
     uint64_t    sizeFilter = 0;
     int index = -1;
     bool all = false, apply = false, noBackup = false, audio = false;
+    bool discardBackups = false;
 };
 
 static Args parse(int argc, char** argv) {
@@ -196,6 +202,7 @@ static Args parse(int argc, char** argv) {
         else if (s == "--apply") a.apply = true;
         else if (s == "--no-backup") a.noBackup = true;
         else if (s == "--audio") a.audio = true;
+        else if (s == "--discard-backups") a.discardBackups = true;
         else if (s == "all") a.all = true;
         // positional file/pattern arguments take priority over the game
         // index: `find 666` is a pattern, not game #666
@@ -576,6 +583,76 @@ static int cmdUnrip(const Args& a) {
     if (!r.ok) { std::printf("ERROR: %s\n", r.error.c_str()); return 1; }
     std::printf("restored %u %s file(s), %s\n", r.rippedCount,
                 a.audio ? "audio" : "video", humanSize(r.blankedBytes).c_str());
+    return 0;
+}
+
+static int cmdShrink(const Args& a) {
+    UlCfg cfg;
+    size_t index = 0;
+    std::string id;
+    if (!resolveGame(a, cfg, index, id)) return 2;
+
+    const std::string serial = cfg.records[index].serialStr();
+    const uint32_t parts = cfg.records[index].parts;
+
+    std::printf("analyzing (hashes every file)...\n");
+    ShrinkInfo info = analyzeShrink(a.dir, id, serial, parts, makeProgress());
+    std::printf("\n");
+    if (!info.ok) { std::printf("ERROR: %s\n", info.error.c_str()); return 1; }
+
+    const double pct = info.currentBytes
+        ? 100.0 * double(info.savings()) / double(info.currentBytes) : 0.0;
+    std::printf("game size now:   %s\n", humanSize(info.currentBytes).c_str());
+    if (info.duplicateBytes)
+        std::printf("  duplicate files: %s (%zu extra cop%s)\n",
+                    humanSize(info.duplicateBytes).c_str(), info.duplicateFiles,
+                    info.duplicateFiles == 1 ? "y" : "ies");
+    if (info.zeroBytes)
+        std::printf("  zero-filled:     %s (%zu file%s)\n",
+                    humanSize(info.zeroBytes).c_str(), info.zeroFiles,
+                    info.zeroFiles == 1 ? "" : "s");
+    if (info.gapBytes)
+        std::printf("  unused space:    %s\n", humanSize(info.gapBytes).c_str());
+    std::printf("after shrink:    %s  (saves %s, %.1f%%)\n",
+                humanSize(info.finalBytes).c_str(),
+                humanSize(info.savings()).c_str(), pct);
+    if (info.savings() == 0) {
+        std::printf("nothing to shrink\n");
+        return 0;
+    }
+    if (info.hasRipBackups && !a.discardBackups) {
+        std::printf("NOTE: this game has rip backups, whose stored offsets would\n"
+                    "      go stale. Restore them first (usbutils unrip %d -d %s)\n"
+                    "      or pass --discard-backups to delete them and shrink.\n",
+                    a.index, a.dir.c_str());
+        return a.apply ? 1 : 0;
+    }
+    if (!a.apply) {
+        std::printf("dry run only — pass --apply to rewrite the game in place\n");
+        return 0;
+    }
+
+    std::printf("shrinking (keep the drive plugged in)...\n");
+    const ShrinkResult r = shrinkGame(a.dir, id, serial, parts,
+                                      a.discardBackups, makeProgress());
+    std::printf("\n");
+    if (!r.ok) { std::printf("ERROR: %s\n", r.error.c_str()); return 1; }
+    if (r.newBytes == r.oldBytes) {
+        std::printf("nothing to shrink\n");
+        return 0;
+    }
+    const double done = r.oldBytes
+        ? 100.0 * double(r.oldBytes - r.newBytes) / double(r.oldBytes) : 0.0;
+    std::printf("shrunk %s -> %s (saved %s, %.1f%%)\n",
+                humanSize(r.oldBytes).c_str(), humanSize(r.newBytes).c_str(),
+                humanSize(r.oldBytes - r.newBytes).c_str(), done);
+    if (r.newParts != r.oldParts)
+        std::printf("chunk files: %u -> %u (ul.cfg updated)\n",
+                    r.oldParts, r.newParts);
+    if (r.verified)
+        std::printf("verified: every file re-read and matched\n");
+    else
+        std::printf("warning: the image was rewritten but not verified\n");
     return 0;
 }
 
@@ -1071,6 +1148,7 @@ int main(int argc, char** argv) {
     if (a.cmd == "audio")   return cmdVideos(a, true);
     if (a.cmd == "rip")     return cmdRip(a);
     if (a.cmd == "unrip")   return cmdUnrip(a);
+    if (a.cmd == "shrink")  return cmdShrink(a);
     if (a.cmd == "dnas")    return cmdDnas(a);
     if (a.cmd == "ps2load") return cmdPs2Load(a);
     if (a.cmd == "find")    return cmdFind(a);
