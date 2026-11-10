@@ -75,9 +75,10 @@ Help menu, the CLI with `usbutils check-update`.
 ### Advanced tools
 
 - Turn in-game videos off and back on. Fully reversible, with an automatic
-  backup of the original video data.
+  compressed backup of the original video data.
 - Turn in-game audio off and back on: music, voice, and sound effects
-  (`.VAG`, `.ADS`, `.SS2`, and friends), with the same reversible backup.
+  (`.VAG`, `.ADS`, `.SS2`, and friends), with the same reversible backup —
+  audio backups compress dramatically (raw ADPCM with lots of silence).
 - Find a file inside every game at once, with wildcards and a size filter
 - Browse one game's files, extract or replace them
 - Open any plain ISO, explore it, add / delete / rename files, edit the
