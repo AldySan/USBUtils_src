@@ -37,7 +37,7 @@ binary** and is maintained as a modern, documented, testable codebase.
 | **Create game from CD/DVD** (raw-device install: GUI disc picker with PS2 probing, `install /dev/sr0` on the CLI) | ✅ |
 | **Select / Invert selection** + batch backup-export and batch remove of marked games | ✅ |
 | **Close ul.cfg** / **View current config** (original File/Tools menu entries) | ✅ |
-| **"Useful acquired"** panel — live status of the shipped support files (`usbutils support` on the CLI) | ✅ |
+| **Support files** panel (the original's "Useful acquired") — live status of the shipped support files (`usbutils support` on the CLI) | ✅ |
 | Complete original data set: 5 × `usbutil.*` + `SCEE_DD/IOPRP*.IMG` + `PS2LOAD.ELF`, checksum-verified | ✅ |
 | Application icon on Windows (embedded exe icon + version info) and Linux (hicolor + `.desktop`) | ✅ |
 | USB drive discovery (Windows / Linux / macOS) | ✅ |
@@ -123,9 +123,11 @@ CD/DVD disc), copy/move/rename/remove, batch backup-export of marked
 games, find-file, per-game file browser (extract/replace), check & repair
 (incl. code 666.66), recovery, drive report, the video-rip, DNAS and
 PS2Load dialogs, "Open ISO to [Explore/Modify]", Close ul.cfg, View
-current configuration and the "Useful acquired" support-file strip — all
-long operations run on worker threads with cancelable progress bars. The
-GUI checks for updates automatically at startup and from the Help menu.
+current configuration and the support-file strip. Long copy jobs (install,
+export, copy, move, remove) run on worker threads with cancelable progress
+bars; quick scans (game file lists, video scan, find-file) show a busy
+dialog instead. The GUI checks for updates automatically at startup and
+from the Help menu.
 
 ## Repository layout
 
