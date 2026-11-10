@@ -13,11 +13,16 @@
  * original bytes are kept in a sidecar backup next to the chunks, so
  * "restore" (the original's "Activate") can bring every video back.
  *
- * Sidecar format — "<first chunk name>.rip", little-endian:
- *   [0..7]   magic "USRRIP01"
+ * Sidecar format — "<first chunk name>.rip", little-endian. Current
+ * writers emit "USRRIP02" (payload block-compressed); "USRRIP01"
+ * sidecars from older builds are still read:
+ *   [0..7]   magic "USRRIP01" / "USRRIP02"
  *   [8..11]  uint32 entry count
- *   [12..]   entries: { uint64 stream offset, uint64 size } pairs
- *   [...]    original bytes of each entry, in entry order
+ *   [12..19] uint64 uncompressed payload size (USRRIP02 only)
+ *   [...]    entries: { uint64 stream offset, uint64 size } pairs
+ *   [...]    payload: original bytes of each entry, in entry order —
+ *            verbatim in v1, stored/LZSS 1 MiB blocks in v2
+ *            (see lzpack.h)
  */
 #pragma once
 

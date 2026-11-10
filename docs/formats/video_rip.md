@@ -31,19 +31,50 @@ recognized video formats") @0x940B8.
 
 ### Sidecar backup format — `ul.<ID>.<SERIAL>.00.rip`
 
-Little-endian, `#pragma pack(1)`:
+Little-endian, `#pragma pack(1)`. Current builds write **USRRIP02**
+(block-compressed payload); **USRRIP01** sidecars from older builds are
+still read (and carried along when more media are ripped later):
 
 | Offset | Size | Field |
 |--------|------|-------|
-| 0 | 8 | magic `"USRRIP01"` |
+| 0 | 8 | magic `"USRRIP01"` / `"USRRIP02"` |
 | 8 | 4 | uint32 entry count |
-| 12 | 16×N | entries: `{ uint64 streamOffset, uint64 size }` |
-| 12+16N | … | original bytes of each entry, in entry order |
+| 12 | 8 | uint64 uncompressed payload size (USRRIP02 only) |
+| 12/20 | 16×N | entries: `{ uint64 streamOffset, uint64 size }` |
+| … | … | payload (below) |
 
-Ripping more videos later appends entries; previously backed-up data is
-copied verbatim (the game stream already holds zeros for it — re-reading
-it would destroy the backup). An incremental destructive rip never
-damages an existing backup.
+The payload is the original bytes of each entry, in entry order. In a
+v1 sidecar it is stored verbatim. In a v2 sidecar it is a sequence of
+1 MiB blocks, each self-describing (see `core/lzpack.h`):
+
+```
+uint32 hdr    bit 31 = 1 -> LZSS data (uint32 compLen follows),
+              bit 31 = 0 -> stored data; bits 0-30 = raw block length
+data          compLen LZSS bytes | rawLen verbatim bytes
+```
+
+The LZSS micro-format is byte-oriented: a control byte precedes up to 8
+units (1 bit each, 1 = literal byte, 0 = 3-byte match token: uint16
+back-offset 1..65535 within the same block + uint8 length−4). The
+decoder rejects any offset reaching before the block start, so a
+corrupt sidecar fails loudly instead of writing garbage into the game.
+
+Ripping more media later appends entries and re-encodes the whole
+payload — previously backed-up bytes are re-read from the old sidecar
+(the game stream already holds zeros for them). An incremental
+destructive rip never damages an existing backup.
+
+What to expect: PS2 audio (`.VAG`, `.VB`, `.MIB` …) is raw 4-bit ADPCM
+with long zero runs, so `.arip` backups typically shrink dramatically
+(synthetic ADPCM-like patterns measure ~3–60% of the original, depending
+on how much silence they hold). `.PSS` video is already MPEG-2
+entropy-coded, so `.rip` backups stay close to their raw size — a block
+that cannot shrink is stored verbatim at ~4 bytes per MiB of overhead
+instead of growing.
+
+Why not zlib: the core library is deliberately dependency-free, and
+zlib would gain almost nothing on the MPEG-2 half of the payload
+anyway.
 
 ### CLI
 
@@ -68,9 +99,10 @@ blank/restore mechanism, applied to standalone audio files:
 * Detected extensions (case-insensitive): `.VAG` (Sony ADPCM),
   `.VAB`/`.VH`/`.VB` (VAB sample banks), `.ADS`/`.ASS`/`.SS2` (ADPCM
   streams), `.MIB`/`.MIH` (interleaved music and its header).
-* The backup sidecar is `ul.<ID>.<SERIAL>.00.arip` — the same `USRRIP01`
-  container as `.rip`, so a video rip and an audio rip on the same game
-  keep independent backups and can be restored in either order.
+* The backup sidecar is `ul.<ID>.<SERIAL>.00.arip` — the same container
+  as `.rip` (USRRIP02, block-compressed), so a video rip and an audio
+  rip on the same game keep independent backups and can be restored in
+  either order.
 * Video detection (`.PSS`) and audio detection never overlap, so
   `unrip` and `unrip --audio` each restore exactly their own media.
 * Like the video rip it is size-preserving: files are blanked with
