@@ -10,8 +10,9 @@
  *   usbutils check                      -d <dir>
  *   usbutils recover                    -d <dir> [--apply]
  *   usbutils videos <index>             -d <dir>
- *   usbutils rip <index>                -d <dir> [--all | --only p1,p2] [--no-backup]
- *   usbutils unrip <index>              -d <dir>
+ *   usbutils audio <index>              -d <dir>
+ *   usbutils rip <index>                -d <dir> [--audio] [--all | --only p1,p2] [--no-backup]
+ *   usbutils unrip <index>              -d <dir> [--audio]
  *   usbutils ps2load <index>            -d <dir>
  *   usbutils ps2load inject <index>     -d <dir> [--elf <PS2LOAD.ELF>]
  *   usbutils ps2load remove <index>     -d <dir>
@@ -74,8 +75,9 @@ static void usage() {
         "  usbutils check                -d <dir>\n"
         "  usbutils recover              -d <dir> [--apply]\n"
         "  usbutils videos <index>       -d <dir>\n"
-        "  usbutils rip <index>          -d <dir> [--all | --only path,...] [--no-backup]\n"
-        "  usbutils unrip <index>        -d <dir>   (restore ripped videos)\n"
+        "  usbutils audio <index>        -d <dir>   (list in-game audio files)\n"
+        "  usbutils rip <index>          -d <dir> [--audio] [--all | --only path,...] [--no-backup]\n"
+        "  usbutils unrip <index>        -d <dir> [--audio]   (restore ripped media)\n"
         "  usbutils ps2load <index>       -d <dir>   (show injection status)\n"
         "  usbutils ps2load inject <index> -d <dir> [--elf <PS2LOAD.ELF>]\n"
         "  usbutils ps2load remove <index> -d <dir>   (undo injection)\n"
@@ -150,7 +152,7 @@ struct Args {
     std::string pattern, dest, path, file;
     uint64_t    sizeFilter = 0;
     int index = -1;
-    bool all = false, apply = false, noBackup = false;
+    bool all = false, apply = false, noBackup = false, audio = false;
 };
 
 static Args parse(int argc, char** argv) {
@@ -193,6 +195,7 @@ static Args parse(int argc, char** argv) {
         else if (s == "--all") a.all = true;
         else if (s == "--apply") a.apply = true;
         else if (s == "--no-backup") a.noBackup = true;
+        else if (s == "--audio") a.audio = true;
         else if (s == "all") a.all = true;
         // positional file/pattern arguments take priority over the game
         // index: `find 666` is a pattern, not game #666
@@ -432,25 +435,29 @@ static int cmdDrives() {
 // video rip
 // ---------------------------------------------------------------------------
 
-static int cmdVideos(const Args& a) {
+static int cmdVideos(const Args& a, bool audio) {
     UlCfg cfg;
     size_t index = 0;
     std::string id;
     if (!resolveGame(a, cfg, index, id)) return 2;
 
     std::string err;
-    const auto videos = scanVideos(a.dir, id, cfg.records[index].serialStr(),
-                                   cfg.records[index].parts, &err);
+    const auto entries = audio
+        ? scanAudios(a.dir, id, cfg.records[index].serialStr(),
+                     cfg.records[index].parts, &err)
+        : scanVideos(a.dir, id, cfg.records[index].serialStr(),
+                     cfg.records[index].parts, &err);
     if (!err.empty()) { std::printf("ERROR: %s\n", err.c_str()); return 1; }
 
-    if (videos.empty()) {
-        std::printf("no video files recognized in this game\n");
+    if (entries.empty()) {
+        std::printf("no %s files recognized in this game\n",
+                    audio ? "audio" : "video");
         return 0;
     }
     uint64_t total = 0, blanked = 0;
     std::printf("%-4s %-44s %10s  %s\n", "#", "FILE", "SIZE", "STATE");
-    for (size_t i = 0; i < videos.size(); ++i) {
-        const VideoEntry& v = videos[i];
+    for (size_t i = 0; i < entries.size(); ++i) {
+        const VideoEntry& v = entries[i];
         total   += v.size;
         blanked += v.blanked ? v.size : 0;
         std::printf("%-4zu %-44s %10s  %s\n", i, v.path.substr(0, 44).c_str(),
@@ -459,8 +466,11 @@ static int cmdVideos(const Args& a) {
                                             : "blanked (no backup)")
                               : "original");
     }
-    const uint64_t backup = videoBackupSize(a.dir, id, cfg.records[index].serialStr());
-    std::printf("videos: %zu  total %s  blanked %s\n", videos.size(),
+    const uint64_t backup = audio
+        ? audioBackupSize(a.dir, id, cfg.records[index].serialStr())
+        : videoBackupSize(a.dir, id, cfg.records[index].serialStr());
+    std::printf("%s files: %zu  total %s  blanked %s\n",
+                audio ? "audio" : "video", entries.size(),
                 humanSize(total).c_str(), humanSize(blanked).c_str());
     if (backup) std::printf("backup file: %s\n", humanSize(backup).c_str());
     return 0;
@@ -473,10 +483,16 @@ static int cmdRip(const Args& a) {
     if (!resolveGame(a, cfg, index, id)) return 2;
 
     std::string err;
-    const auto videos = scanVideos(a.dir, id, cfg.records[index].serialStr(),
-                                   cfg.records[index].parts, &err);
+    const auto entries = a.audio
+        ? scanAudios(a.dir, id, cfg.records[index].serialStr(),
+                     cfg.records[index].parts, &err)
+        : scanVideos(a.dir, id, cfg.records[index].serialStr(),
+                     cfg.records[index].parts, &err);
     if (!err.empty()) { std::printf("ERROR: %s\n", err.c_str()); return 1; }
-    if (videos.empty()) { std::printf("no video files recognized\n"); return 0; }
+    if (entries.empty()) {
+        std::printf("no %s files recognized\n", a.audio ? "audio" : "video");
+        return 0;
+    }
 
     // selection: --only (comma-separated paths, case-insensitive) or everything
     std::vector<VideoEntry> selection;
@@ -502,7 +518,7 @@ static int cmdRip(const Args& a) {
             const size_t s = p.rfind('\\');
             return s == std::string::npos ? p : p.substr(s + 1);
         };
-        for (const VideoEntry& v : videos) {
+        for (const VideoEntry& v : entries) {
             for (const auto& w : wanted)
                 if (ieq(w, v.path) || ieq(w, baseName(v.path))) {
                     selection.push_back(v);
@@ -511,25 +527,32 @@ static int cmdRip(const Args& a) {
         }
         if (selection.empty()) {
             std::printf("ERROR: none of the --only paths matched; "
-                        "run `usbutils videos %d -d %s` to list them\n",
-                        a.index, a.dir.c_str());
+                        "run `usbutils %s %d -d %s` to list them\n",
+                        a.audio ? "audio" : "videos", a.index, a.dir.c_str());
             return 1;
         }
     } else {
-        selection = videos;                       // default: everything
+        selection = entries;                      // default: everything
     }
 
-    const RipResult r = ripVideos(a.dir, id, cfg.records[index].serialStr(),
-                                  cfg.records[index].parts, selection,
-                                  !a.noBackup, makeProgress());
+    const RipResult r = a.audio
+        ? ripAudios(a.dir, id, cfg.records[index].serialStr(),
+                    cfg.records[index].parts, selection, !a.noBackup,
+                    makeProgress())
+        : ripVideos(a.dir, id, cfg.records[index].serialStr(),
+                    cfg.records[index].parts, selection, !a.noBackup,
+                    makeProgress());
     std::printf("\n");
     if (!r.ok) { std::printf("ERROR: %s\n", r.error.c_str()); return 1; }
     if (r.rippedCount == 0) { std::printf("nothing to rip (already blanked)\n"); return 0; }
-    std::printf("ripped %u video(s), blanked %s", r.rippedCount,
-                humanSize(r.blankedBytes).c_str());
-    if (!a.noBackup)
+    std::printf("ripped %u %s file(s), blanked %s", r.rippedCount,
+                a.audio ? "audio" : "video", humanSize(r.blankedBytes).c_str());
+    if (!a.noBackup) {
         std::printf(", backup %s", humanSize(r.backupBytes).c_str());
-    std::printf("\nundo with: usbutils unrip %d -d %s\n", a.index, a.dir.c_str());
+        std::printf("\nundo with: usbutils unrip %d -d %s%s", a.index,
+                    a.dir.c_str(), a.audio ? " --audio" : "");
+    }
+    std::printf("\n");
     return 0;
 }
 
@@ -539,12 +562,15 @@ static int cmdUnrip(const Args& a) {
     std::string id;
     if (!resolveGame(a, cfg, index, id)) return 2;
 
-    const RipResult r = restoreVideos(a.dir, id, cfg.records[index].serialStr(),
-                                      cfg.records[index].parts, makeProgress());
+    const RipResult r = a.audio
+        ? restoreAudios(a.dir, id, cfg.records[index].serialStr(),
+                        cfg.records[index].parts, makeProgress())
+        : restoreVideos(a.dir, id, cfg.records[index].serialStr(),
+                        cfg.records[index].parts, makeProgress());
     std::printf("\n");
     if (!r.ok) { std::printf("ERROR: %s\n", r.error.c_str()); return 1; }
-    std::printf("restored %u video(s), %s\n", r.rippedCount,
-                humanSize(r.blankedBytes).c_str());
+    std::printf("restored %u %s file(s), %s\n", r.rippedCount,
+                a.audio ? "audio" : "video", humanSize(r.blankedBytes).c_str());
     return 0;
 }
 
@@ -1036,7 +1062,8 @@ int main(int argc, char** argv) {
     if (a.cmd == "check")   return cmdCheck(a);
     if (a.cmd == "recover") return cmdRecover(a);
     if (a.cmd == "drives")  return cmdDrives();
-    if (a.cmd == "videos")  return cmdVideos(a);
+    if (a.cmd == "videos")  return cmdVideos(a, false);
+    if (a.cmd == "audio")   return cmdVideos(a, true);
     if (a.cmd == "rip")     return cmdRip(a);
     if (a.cmd == "unrip")   return cmdUnrip(a);
     if (a.cmd == "dnas")    return cmdDnas(a);

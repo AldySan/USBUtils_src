@@ -69,6 +69,7 @@ private slots:
     void gameFilesSelected();
     void driveReport();
     void videoRipSelected();
+    void audioRipSelected();
     void dnasPatchSelected();
     void ps2LoadSelected();
     void selectAllGames();          ///< original "Select" (mark all games)
@@ -84,6 +85,7 @@ private:
     int selectedRow() const;
     QList<int> selectedRows() const;   ///< all marked games (Select system)
     void copyMoveCommon(bool move);
+    void openMediaRip(bool audio);   ///< shared Videos/Audio dialog opener
     void buildMenus();
     void buildSupportPanel();          ///< "Support files" status strip
     void updateSupportPanel();

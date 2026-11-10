@@ -45,6 +45,49 @@ bool isVideoName(const std::string& isoPath) {
     return base.find(".pss.") != std::string::npos;
 }
 
+/// PS2 audio: Sony ADPCM files (.VAG), VAB sample banks (.VAB/.VH/.VB),
+/// ADPCM streams (.ADS/.ASS/.SS2) and interleaved music (.MIB/.MIH).
+/// Extension match on the base name, case-insensitive.
+bool isAudioName(const std::string& isoPath) {
+    static const char* const kExts[] = {
+        ".vag", ".vab", ".vh", ".vb",
+        ".ads", ".ass", ".ss2",
+        ".mib", ".mih"
+    };
+    const std::string low = toLower(isoPath);
+    const size_t slash = low.rfind('\\');
+    const std::string base =
+        low.substr(slash == std::string::npos ? 0 : slash + 1);
+    const size_t dot = base.rfind('.');
+    if (dot == std::string::npos) return false;
+    for (const char* e : kExts)
+        if (base.compare(dot, std::strlen(e), e) == 0) return true;
+    return false;
+}
+
+/// Everything that differs between the video and the audio rip: which
+/// names match, and which sidecar file keeps the backup.
+struct MediaDef {
+    bool (*isMediaName)(const std::string&);
+    const char* sidecarSuffix;
+};
+constexpr MediaDef kVideo{&isVideoName, ".rip"};
+constexpr MediaDef kAudio{&isAudioName, ".arip"};
+
+std::string backupPath(const std::string& dir, const MediaDef& def,
+                       const std::string& idHex, const std::string& serial) {
+    return joinPath(dir, chunkFileName(idHex, serial, 0) + def.sidecarSuffix);
+}
+
+uint64_t fileSizeBytes(const std::string& p) {
+    FILE* f = std::fopen(p.c_str(), "rb");
+    if (!f) return 0;
+    const bool ok = usbutils::seek64(f, 0, SEEK_END);
+    const int64_t sz = ok ? usbutils::tell64(f) : -1;
+    std::fclose(f);
+    return sz < 0 ? 0 : static_cast<uint64_t>(sz);
+}
+
 #pragma pack(push, 1)
 struct SidecarHeader {
     char     magic[8];
@@ -167,11 +210,19 @@ bool saveSidecar(const std::string& path, const Sidecar& oldSc,
     return std::rename(tmp.c_str(), path.c_str()) == 0;
 }
 
-/// A video is "blanked without backup" when its first sector is all zeros
-/// (real PSS streams start with an MPEG pack header 00 00 01 BA).
+/// A media file is "blanked without backup" when its first sector is all
+/// zeros. The probe must be a FULL 2048-byte sector: 16 bytes used to be
+/// enough for video (.PSS starts with an MPEG-2 pack header), but raw
+/// audio (.VB bodies, .MIB streams) can legitimately begin with digital
+/// silence — ADPCM silence is zero bytes — and would be misreported as
+/// already blanked, which also makes ripMedia skip them. A headered
+/// audio file (.VAG "VAGp", .SS2 "SShd") can never pass this probe.
+/// Residual risk: a headerless stream opening with 2048 bytes of pure
+/// silence — accepted, and only the "no backup" state relies on it
+/// (sidecar entries are authoritative).
 bool looksBlanked(GameStream& stream, const VideoEntry& v) {
     if (v.size < 2048) return false;
-    uint8_t head[16] = {};
+    uint8_t head[2048] = {};
     if (stream.read(v.offset, head, sizeof(head)) != sizeof(head))
         return false;
     for (uint8_t b : head)
@@ -179,33 +230,16 @@ bool looksBlanked(GameStream& stream, const VideoEntry& v) {
     return true;
 }
 
-} // namespace
-
-std::string videoBackupFileName(const std::string& idHex,
-                                const std::string& serial) {
-    return chunkFileName(idHex, serial, 0) + ".rip";
-}
-
-uint64_t videoBackupSize(const std::string& dir, const std::string& idHex,
-                         const std::string& serial) {
-    const std::string p = joinPath(dir, videoBackupFileName(idHex, serial));
-    FILE* f = std::fopen(p.c_str(), "rb");
-    if (!f) return 0;
-    const bool ok = usbutils::seek64(f, 0, SEEK_END);
-    const int64_t sz = ok ? usbutils::tell64(f) : -1;
-    std::fclose(f);
-    return sz < 0 ? 0 : static_cast<uint64_t>(sz);
-}
-
 // ---------------------------------------------------------------------------
-// scan
+// scan / rip / restore — shared by the video and the audio flavor
 // ---------------------------------------------------------------------------
 
-std::vector<VideoEntry> scanVideos(const std::string& dir,
-                                   const std::string& idHex,
-                                   const std::string& serial,
-                                   uint32_t parts,
-                                   std::string* error) {
+std::vector<VideoEntry> scanMedia(const MediaDef& def,
+                                  const std::string& dir,
+                                  const std::string& idHex,
+                                  const std::string& serial,
+                                  uint32_t parts,
+                                  std::string* error) {
     std::vector<VideoEntry> out;
     if (error) error->clear();
 
@@ -219,7 +253,7 @@ std::vector<VideoEntry> scanVideos(const std::string& dir,
         return stream.read(off, dst, n) == n;
     };
     if (!walkIso(read, [&](const IsoEntry& e) {
-            if (!e.isDir && isVideoName(e.path))
+            if (!e.isDir && def.isMediaName(e.path))
                 out.push_back(VideoEntry{e.path,
                                          static_cast<uint64_t>(e.lba) * 2048ull,
                                          e.size, false, false});
@@ -232,7 +266,7 @@ std::vector<VideoEntry> scanVideos(const std::string& dir,
 
     // merge sidecar state + zero-detection
     Sidecar sc;
-    loadSidecar(joinPath(dir, videoBackupFileName(idHex, serial)), sc);
+    loadSidecar(backupPath(dir, def, idHex, serial), sc);
     for (VideoEntry& v : out) {
         for (const auto& e : sc.entries) {
             if (e.offset == v.offset && e.size == v.size) {
@@ -246,16 +280,13 @@ std::vector<VideoEntry> scanVideos(const std::string& dir,
     return out;
 }
 
-// ---------------------------------------------------------------------------
-// rip
-// ---------------------------------------------------------------------------
-
-RipResult ripVideos(const std::string& dir, const std::string& idHex,
-                    const std::string& serial, uint32_t parts,
-                    const std::vector<VideoEntry>& selection,
-                    bool makeBackup,
-                    const ProgressFn& progress,
-                    const std::function<bool()>& cancelled) {
+RipResult ripMedia(const MediaDef& def,
+                   const std::string& dir, const std::string& idHex,
+                   const std::string& serial, uint32_t parts,
+                   const std::vector<VideoEntry>& selection,
+                   bool makeBackup,
+                   const ProgressFn& progress,
+                   const std::function<bool()>& cancelled) {
     RipResult res;
 
     GameStream stream;
@@ -265,7 +296,7 @@ RipResult ripVideos(const std::string& dir, const std::string& idHex,
     }
 
     // ---- 1. build the entry list (old entries + newly selected) --------
-    const std::string scPath = joinPath(dir, videoBackupFileName(idHex, serial));
+    const std::string scPath = backupPath(dir, def, idHex, serial);
     Sidecar sc;
     if (makeBackup && !loadSidecar(scPath, sc)) {
         res.error = "existing backup file is corrupt: " + scPath;
@@ -294,9 +325,9 @@ RipResult ripVideos(const std::string& dir, const std::string& idHex,
         res.backupBytes = newBytes;
     }
     // (destructive rip: an existing backup is left untouched on purpose,
-    //  so previously backed-up videos remain restorable)
+    //  so previously backed-up media remain restorable)
 
-    // ---- 3. blank the newly selected videos -----------------------------
+    // ---- 3. blank the newly selected media -------------------------------
     std::vector<uint8_t> zeros(4 * 1024 * 1024, 0);
     uint64_t done = 0;
     const uint64_t total = newBytes;
@@ -329,17 +360,14 @@ RipResult ripVideos(const std::string& dir, const std::string& idHex,
     return res;
 }
 
-// ---------------------------------------------------------------------------
-// restore
-// ---------------------------------------------------------------------------
-
-RipResult restoreVideos(const std::string& dir, const std::string& idHex,
-                        const std::string& serial, uint32_t parts,
-                        const ProgressFn& progress,
-                        const std::function<bool()>& cancelled) {
+RipResult restoreMedia(const MediaDef& def,
+                       const std::string& dir, const std::string& idHex,
+                       const std::string& serial, uint32_t parts,
+                       const ProgressFn& progress,
+                       const std::function<bool()>& cancelled) {
     RipResult res;
 
-    const std::string scPath = joinPath(dir, videoBackupFileName(idHex, serial));
+    const std::string scPath = backupPath(dir, def, idHex, serial);
 
     Sidecar sc;
     if (!loadSidecar(scPath, sc) || sc.entries.empty()) {
@@ -401,6 +429,92 @@ RipResult restoreVideos(const std::string& dir, const std::string& idHex,
     std::remove(scPath.c_str());             // backup fully consumed
     res.ok = true;
     return res;
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// video flavor
+// ---------------------------------------------------------------------------
+
+std::string videoBackupFileName(const std::string& idHex,
+                                const std::string& serial) {
+    return chunkFileName(idHex, serial, 0) + ".rip";
+}
+
+uint64_t videoBackupSize(const std::string& dir, const std::string& idHex,
+                         const std::string& serial) {
+    return fileSizeBytes(joinPath(dir, videoBackupFileName(idHex, serial)));
+}
+
+std::vector<VideoEntry> scanVideos(const std::string& dir,
+                                   const std::string& idHex,
+                                   const std::string& serial,
+                                   uint32_t parts,
+                                   std::string* error) {
+    return scanMedia(kVideo, dir, idHex, serial, parts, error);
+}
+
+RipResult ripVideos(const std::string& dir, const std::string& idHex,
+                    const std::string& serial, uint32_t parts,
+                    const std::vector<VideoEntry>& selection,
+                    bool makeBackup,
+                    const ProgressFn& progress,
+                    const std::function<bool()>& cancelled) {
+    return ripMedia(kVideo, dir, idHex, serial, parts, selection,
+                    makeBackup, progress, cancelled);
+}
+
+RipResult restoreVideos(const std::string& dir, const std::string& idHex,
+                        const std::string& serial, uint32_t parts,
+                        const ProgressFn& progress,
+                        const std::function<bool()>& cancelled) {
+    return restoreMedia(kVideo, dir, idHex, serial, parts, progress, cancelled);
+}
+
+// ---------------------------------------------------------------------------
+// audio flavor (USBUtils extension — the original tool had no audio rip)
+// ---------------------------------------------------------------------------
+
+std::string audioBackupFileName(const std::string& idHex,
+                                const std::string& serial) {
+    return chunkFileName(idHex, serial, 0) + ".arip";
+}
+
+uint64_t audioBackupSize(const std::string& dir, const std::string& idHex,
+                         const std::string& serial) {
+    return fileSizeBytes(joinPath(dir, audioBackupFileName(idHex, serial)));
+}
+
+std::vector<std::string> backupFileNames(const std::string& idHex,
+                                         const std::string& serial) {
+    return {videoBackupFileName(idHex, serial),
+            audioBackupFileName(idHex, serial)};
+}
+
+std::vector<VideoEntry> scanAudios(const std::string& dir,
+                                   const std::string& idHex,
+                                   const std::string& serial,
+                                   uint32_t parts,
+                                   std::string* error) {
+    return scanMedia(kAudio, dir, idHex, serial, parts, error);
+}
+
+RipResult ripAudios(const std::string& dir, const std::string& idHex,
+                    const std::string& serial, uint32_t parts,
+                    const std::vector<VideoEntry>& selection,
+                    bool makeBackup,
+                    const ProgressFn& progress,
+                    const std::function<bool()>& cancelled) {
+    return ripMedia(kAudio, dir, idHex, serial, parts, selection,
+                    makeBackup, progress, cancelled);
+}
+
+RipResult restoreAudios(const std::string& dir, const std::string& idHex,
+                        const std::string& serial, uint32_t parts,
+                        const ProgressFn& progress,
+                        const std::function<bool()>& cancelled) {
+    return restoreMedia(kAudio, dir, idHex, serial, parts, progress, cancelled);
 }
 
 } // namespace usbutils

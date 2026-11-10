@@ -229,22 +229,28 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     auto* row3 = new QHBoxLayout(advBox);
     auto* btnFiles  = new QPushButton(tr("Game files..."), this);
     auto* btnVideos = new QPushButton(tr("Videos..."), this);
+    auto* btnAudio  = new QPushButton(tr("Audio..."), this);
     auto* btnDnas   = new QPushButton(tr("DNAS patch..."), this);
     auto* btnPs2    = new QPushButton(tr("PS2Load..."), this);
     btnFiles->setToolTip(tr("Look at the files inside the selected game; "
                             "save copies out or put your own file in."));
     btnVideos->setToolTip(tr("Turn a game's videos off so it runs smoother "
                              "from USB; reversible."));
+    btnAudio->setToolTip(tr("Turn a game's music, voice and sound effects "
+                            "off (the game plays without them); "
+                            "reversible."));
     btnDnas->setToolTip(tr("Fix the DNAS error that stops some games from "
                            "going online."));
     btnPs2->setToolTip(tr("Swap a game's boot program for the PS2Load "
                           "helper. It helps stubborn games boot from USB."));
     connect(btnFiles,  &QPushButton::clicked, this, &MainWindow::gameFilesSelected);
     connect(btnVideos, &QPushButton::clicked, this, &MainWindow::videoRipSelected);
+    connect(btnAudio,  &QPushButton::clicked, this, &MainWindow::audioRipSelected);
     connect(btnDnas,   &QPushButton::clicked, this, &MainWindow::dnasPatchSelected);
     connect(btnPs2,    &QPushButton::clicked, this, &MainWindow::ps2LoadSelected);
     row3->addWidget(btnFiles);
     row3->addWidget(btnVideos);
+    row3->addWidget(btnAudio);
     row3->addWidget(btnDnas);
     row3->addWidget(btnPs2);
     panelL->addWidget(advBox);
@@ -349,6 +355,8 @@ void MainWindow::buildMenus() {
     QMenu* mAdv = menuBar()->addMenu(tr("&Advanced"));
     QAction* aVideos = mAdv->addAction(tr("&Videos (turn off / restore)..."));
     connect(aVideos, &QAction::triggered, this, &MainWindow::videoRipSelected);
+    QAction* aAudio = mAdv->addAction(tr("&Audio (turn off / restore)..."));
+    connect(aAudio, &QAction::triggered, this, &MainWindow::audioRipSelected);
     QAction* aDnas = mAdv->addAction(tr("&DNAS patch..."));
     connect(aDnas, &QAction::triggered, this, &MainWindow::dnasPatchSelected);
     QAction* aPs2 = mAdv->addAction(tr("&PS2Load options..."));
@@ -1390,7 +1398,7 @@ void MainWindow::driveReport() {
 // per-game dialogs (video rip / DNAS / PS2Load)
 // ---------------------------------------------------------------------------
 
-void MainWindow::videoRipSelected() {
+void MainWindow::openMediaRip(bool audio) {
     const int row = selectedRow();
     if (row < 0 || !cfg_ || row >= (int)cfg_->records.size()) {
         QMessageBox::warning(this, tr("USBUtils"), tr("Select a game."));
@@ -1400,10 +1408,17 @@ void MainWindow::videoRipSelected() {
     const std::string id = gameIdHex(r.nameStr());
     VideoRipDialog dlg(dir_, QString::fromStdString(r.nameStr()),
                        QString::fromStdString(id),
-                       QString::fromStdString(r.serialStr()), r.parts, this);
+                       QString::fromStdString(r.serialStr()), r.parts,
+                       audio ? VideoRipDialog::Media::Audio
+                             : VideoRipDialog::Media::Video,
+                       this);
     dlg.exec();
     refreshGames();      // sizes/state may have changed
 }
+
+void MainWindow::videoRipSelected() { openMediaRip(false); }
+
+void MainWindow::audioRipSelected() { openMediaRip(true); }
 
 void MainWindow::ps2LoadSelected() {
     const int row = selectedRow();
