@@ -240,6 +240,15 @@ uint32_t GameStream::chunkCountFor(uint64_t bytes) const {
 
 bool GameStream::shrinkTo(uint64_t newSize, uint32_t* removed) {
     if (removed) *removed = 0;
+    if (parts_ == 0) return false;
+    const uint32_t had = parts_;
+    if (!shrinkTrim(newSize)) return false;
+    const uint32_t deleted = deleteSurplus(parts_, had);
+    if (removed) *removed = deleted;
+    return true;
+}
+
+bool GameStream::shrinkTrim(uint64_t newSize) {
     if (parts_ == 0 || newSize > total_) return false;
     if (newSize == total_) return true;
 
@@ -267,20 +276,24 @@ bool GameStream::shrinkTo(uint64_t newSize, uint32_t* removed) {
     std::fclose(f);
     if (!ok) return false;
 
-    uint32_t deleted = 0;
-    for (uint32_t i = keep; i < parts_; ++i)
-        if (std::remove(chunkPath_(i).c_str()) == 0) ++deleted;
-        // A surplus file that cannot be removed (in use on Windows, foreign
-        // permissions) is not fatal: it stays behind as an obsolete "ul.*"
-        // file the drive-space cleanup can delete later.
-
+    // The surplus chunk files deliberately stay on disk: the caller makes
+    // ul.cfg durable first and deletes them afterwards (deleteSurplus).
     starts_.resize(keep);
     parts_ = keep;
     total_ = newSize;
     files_.assign(keep, nullptr);
     mode_.assign(keep, kClosed);
-    if (removed) *removed = deleted;
     return true;
+}
+
+uint32_t GameStream::deleteSurplus(uint32_t keep, uint32_t hadParts) {
+    uint32_t deleted = 0;
+    for (uint32_t i = keep; i < hadParts; ++i)
+        if (std::remove(chunkPath_(i).c_str()) == 0) ++deleted;
+        // A surplus file that cannot be removed (in use on Windows, foreign
+        // permissions) is not fatal: it stays behind as an obsolete "ul.*"
+        // file the drive-space cleanup can delete later.
+    return deleted;
 }
 
 } // namespace usbutils

@@ -73,7 +73,25 @@ public:
     /// which refuses to cut past the final chunk). `removed` (optional)
     /// receives how many chunk FILES were deleted. The ul.cfg record is
     /// NOT touched — callers must keep its parts field in sync.
+    /// Equivalent to shrinkTrim() followed by deleteSurplus(); prefer the
+    /// two separate calls when something must be made durable in between
+    /// (the ul.cfg parts field — see isoshrink.cpp).
     bool shrinkTo(uint64_t newSize, uint32_t* removed = nullptr);
+
+    /// Cut the stream to `newSize` bytes WITHOUT deleting anything: the
+    /// last kept chunk file is trimmed and the stream's accounting
+    /// switches to the kept chunks, but the surplus chunk files stay on
+    /// disk. A caller that fails between this and deleteSurplus() leaves
+    /// every chunk file in place — the loader then opens parts it never
+    /// reads, which is safe, instead of missing parts it needs.
+    bool shrinkTrim(uint64_t newSize);
+
+    /// Delete the surplus chunk files `keep .. hadParts-1` after the
+    /// ul.cfg record was updated. A file that cannot be removed (in use
+    /// on Windows, foreign permissions) stays behind as an obsolete
+    /// "ul.*" file the drive-space cleanup can delete later. Returns how
+    /// many files were actually removed.
+    uint32_t deleteSurplus(uint32_t keep, uint32_t hadParts);
 
     /// Total size of all chunk files of a game (sum of file sizes).
     static uint64_t totalSize(const std::string& dir, const std::string& idHex,
