@@ -1,0 +1,292 @@
+name: release
+
+# Tag-driven release pipeline. Pushing a v* tag builds the CLI and GUI on
+# Linux and Windows, runs the test suite, packages self-contained bundles
+# (same layout as scripts/build_releases.sh) and attaches them to the
+# GitHub release. Manual runs (workflow_dispatch) build and package but
+# never publish anything.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt 6
+        run: sudo apt-get update && sudo apt-get install -y qt6-base-dev
+
+      - name: Version guard
+        run: |
+          VER=$(grep -oP 'project\(USBUtils VERSION \K[0-9.]+' CMakeLists.txt)
+          echo "VERSION=$VER" >> "$GITHUB_ENV"
+          if [[ "$GITHUB_REF" == refs/tags/* && "$GITHUB_REF_NAME" != "v$VER" ]]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match CMakeLists.txt version $VER"
+            exit 1
+          fi
+          echo "building version $VER"
+
+      - name: Build
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          VER="$VERSION"
+          NAME="usbutils-$VER-linux-x86_64"
+          ROOT="pkg/$NAME"
+          QTPLUG=/usr/lib/x86_64-linux-gnu/qt6/plugins
+          mkdir -p "$ROOT/bin" "$ROOT/lib" "$ROOT/plugins/platforms" \
+                   "$ROOT/plugins/imageformats" "$ROOT/data"
+
+          cp build/usbutils-gui "$ROOT/bin/usbutils-gui.bin"
+          cp build/usbutils "$ROOT/bin/usbutils.bin"
+          cat > "$ROOT/bin/usbutils" <<'EOF'
+          #!/usr/bin/env sh
+          HERE=$(cd "$(dirname "$0")/.." && pwd)
+          exec "$HERE/bin/usbutils.bin" "$@"
+          EOF
+          cat > "$ROOT/usbutils-gui" <<'EOF'
+          #!/usr/bin/env sh
+          HERE=$(cd "$(dirname "$0")" && pwd)
+          export LD_LIBRARY_PATH="$HERE/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          export QT_PLUGIN_PATH="$HERE/plugins${QT_PLUGIN_PATH:+:$QT_PLUGIN_PATH}"
+          exec "$HERE/bin/usbutils-gui.bin" "$@"
+          EOF
+          chmod +x "$ROOT/usbutils-gui" "$ROOT/bin/usbutils"
+
+          # Qt runtime closure: BFS over ldd from the GUI binary and the xcb
+          # plugin, skipping glibc and the loader (those must come from the
+          # target system).
+          declare -A seen=()
+          queue=("build/usbutils-gui" "$QTPLUG/platforms/libqxcb.so")
+          while [ ${#queue[@]} -gt 0 ]; do
+              next=()
+              for bin in "${queue[@]}"; do
+                  [ -f "$bin" ] || continue
+                  while IFS= read -r path; do
+                      [ -n "$path" ] || continue
+                      base=$(basename "$path")
+                      case "$base" in
+                          libc.so*|libm.so*|libdl*|libpthread*|librt*|ld-linux*|linux-vdso*) continue ;;
+                      esac
+                      if [ -z "${seen[$base]:-}" ]; then
+                          seen[$base]=1
+                          cp -L "$path" "$ROOT/lib/"
+                          next+=("$path")
+                      fi
+                  done < <(ldd "$bin" 2>/dev/null | awk '/=> \//{print $3} /^[[:space:]]*\//{print $1}')
+              done
+              queue=("${next[@]}")
+          done
+          [ "${#seen[@]}" -ge 10 ] || { echo "Qt closure too small (${#seen[@]} libs)"; exit 1; }
+
+          # desktop platform plugins only (see scripts/build_releases.sh)
+          for p in libqxcb.so libqoffscreen.so libqminimal.so; do
+              cp -L "$QTPLUG/platforms/$p" "$ROOT/plugins/platforms/"
+          done
+          for p in libqgif.so libqico.so libqjpeg.so; do
+              cp -L "$QTPLUG/imageformats/$p" "$ROOT/plugins/imageformats/"
+          done
+
+          # the bundle must be self-contained apart from glibc
+          missing=$(LD_LIBRARY_PATH="$ROOT/lib" ldd "$ROOT"/lib/*.so \
+                    "$ROOT"/plugins/platforms/*.so "$ROOT"/plugins/imageformats/*.so \
+                    2>/dev/null | grep 'not found' | sort -u || true)
+          if [ -n "$missing" ]; then
+              echo "unresolved bundled deps:"
+              echo "$missing"
+              exit 1
+          fi
+
+          cp -r data/. "$ROOT/data/"
+          mkdir -p "$ROOT/icons"
+          cp res/icons/usbutils_*.png res/icons/usbutils.svg "$ROOT/icons/"
+          cp res/linux/usbutils.desktop "$ROOT/"
+
+          cat > "$ROOT/README.txt" <<EOF
+          USBUtils $VER (Linux, x86-64)
+
+            usbutils        command line tool      (run from any terminal)
+            usbutils-gui    windowed app           (run from a file manager)
+            data/           data files used by some tools:
+                                PS2LOAD.ELF   payload for "ps2load inject"
+                                usbutil.dni   DNAS package index (version list)
+                                usbutil.dna   DNAS package data (IOPRP images)
+                                usbutil.ljs   game compatibility notes
+                                usbutil.aso   tool settings persistence (optional)
+                                usbutil.rcn   recovery-game notes (optional)
+                                SCEE_DD/      standalone IOPRP images (optional)
+            icons/, usbutils.desktop
+                            application icon + menu entry for distro-style installs
+
+          Quick start:
+            ./usbutils drives                       # list removable drives
+            ./usbutils install game.iso -d /media/usb0 -n "Game Name"
+            ./usbutils list -d /media/usb0
+            ./usbutils iso info game.iso            # inspect a plain ISO image
+            ./usbutils support                      # check the shipped data files
+            ./usbutils --help
+
+          The GUI bundles its own Qt runtime, so no Qt installation is needed.
+          Updates: the GUI checks automatically at startup; CLI: usbutils check-update.
+          EOF
+
+          tar -C pkg -czf "$NAME.tar.gz" "$NAME"
+
+          for want in "lib/libQt6Core.so" "data/usbutil.dna" "data/usbutil.rcn" \
+                      "SCEE_DD/IOPRP165.IMG" "usbutils.desktop" "usbutils-gui"; do
+              tar tzf "$NAME.tar.gz" | grep -q "$want" || { echo "FAIL: $want missing"; exit 1; }
+          done
+          echo "package OK: $NAME.tar.gz ($(du -h "$NAME.tar.gz" | cut -f1))"
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64-package
+          path: usbutils-*.tar.gz
+          if-no-files-found: error
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          arch: 'win64_mingw'
+          cache: 'true'
+
+      - name: Version guard
+        run: |
+          $ver = (Select-String -Path CMakeLists.txt -Pattern 'project\(USBUtils VERSION ([0-9.]+)\)').Matches[0].Groups[1].Value
+          echo "VERSION=$ver" >> $env:GITHUB_ENV
+          if ($env:GITHUB_REF.StartsWith('refs/tags/') -and $env:GITHUB_REF_NAME -ne "v$ver") {
+            Write-Host "::error::tag $($env:GITHUB_REF_NAME) does not match CMakeLists.txt version $ver"
+            exit 1
+          }
+          Write-Host "building version $ver"
+
+      - name: Build
+        env:
+          CXX: g++
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          cmake --build build --parallel
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Test
+        run: |
+          ctest --test-dir build --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Package
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ver = $env:VERSION
+          $name = "usbutils-$ver-windows-x86_64"
+          New-Item -ItemType Directory -Force pkg | Out-Null
+
+          # Qt DLLs, platform/style/imageformat plugins and the MinGW runtime
+          windeployqt --release --no-translations --compiler-runtime --dir pkg build\usbutils-gui.exe
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          # optional fallbacks the local release packages never shipped
+          Remove-Item pkg\opengl32sw.dll, pkg\d3dcompiler_47.dll -ErrorAction SilentlyContinue
+
+          Copy-Item build\usbutils-gui.exe, build\usbutils.exe pkg
+          # windeployqt should have placed these; copy from the compiler as a fallback
+          $gccDir = Split-Path (Get-Command g++).Source
+          foreach ($dll in 'libstdc++-6.dll', 'libgcc_s_seh-1.dll', 'libwinpthread-1.dll') {
+            if (-not (Test-Path "pkg\$dll")) { Copy-Item "$gccDir\$dll" pkg }
+          }
+          Copy-Item -Recurse data pkg
+
+          @"
+          USBUtils $ver (Windows, x86-64)
+
+            usbutils.exe        command line tool   (run from cmd / PowerShell)
+            usbutils-gui.exe    windowed app        (double-click it)
+            data/               data files used by some tools:
+                                    PS2LOAD.ELF   payload for "ps2load inject"
+                                    usbutil.dni   DNAS package index (version list)
+                                    usbutil.dna   DNAS package data (IOPRP images)
+                                    usbutil.ljs   game compatibility notes
+                                    usbutil.aso   tool settings persistence (optional)
+                                    usbutil.rcn   recovery-game notes (optional)
+                                    SCEE_DD/      standalone IOPRP images (optional)
+
+          Quick start (cmd):
+            usbutils.exe drives
+            usbutils.exe install game.iso -d E:\ -n "Game Name"
+            usbutils.exe list -d E:\
+            usbutils.exe iso info game.iso
+            usbutils.exe support
+
+          Install straight from a disc: usbutils.exe install D: -d E:\ -n "Game"
+
+          All required Qt and MinGW runtime DLLs are included in this folder.
+          Keep the exe files together with the DLL, platforms, styles and
+          imageformats folders. Updates: the GUI checks automatically at startup;
+          CLI: usbutils.exe check-update.
+          "@ | Out-File -Encoding ascii pkg\README.txt
+
+          7z a -tzip "$name.zip" .\pkg\*
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+          $listing = 7z l "$name.zip" | Out-String
+          foreach ($want in 'usbutil.dna', 'usbutil.rcn', 'IOPRP202.IMG', 'Qt6Core.dll',
+                            'libstdc++-6.dll', 'libgcc_s_seh-1.dll', 'libwinpthread-1.dll',
+                            'qwindows.dll', 'usbutils-gui.exe', 'README.txt') {
+            if (-not $listing.Contains($want)) {
+              Write-Host "::error::$want missing from the zip"
+              exit 1
+            }
+          }
+          Write-Host "package OK: $name.zip"
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64-package
+          path: usbutils-*.zip
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download packages
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: '*-package'
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          echo "RELEASE_NAME=USBUtils ${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ env.RELEASE_NAME }}
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
