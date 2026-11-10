@@ -94,7 +94,7 @@ void FindDialog::search() {
     const std::string pattern = pattern_->text().trimmed().toStdString();
     if (pattern.empty()) {
         QMessageBox::information(this, tr("Find a file"),
-            tr("Enter what to look for first — an empty pattern would match "
+            tr("Enter what to look for first: an empty pattern would match "
                "every file of every game."));
         return;
     }
@@ -196,7 +196,7 @@ void FindDialog::extractSelected() {
                     tr("Saved a copy to:\n%1").arg(out));
             else if (cancelled->load())
                 QMessageBox::information(this, tr("Find a file"),
-                    tr("Copy cancelled — nothing was written."));
+                    tr("Copy cancelled: nothing was written."));
             else
                 QMessageBox::critical(this, tr("Find a file"),
                     tr("Could not copy the file out of the game."));
@@ -208,7 +208,7 @@ void FindDialog::extractSelected() {
 void FindDialog::closeEvent(QCloseEvent* ev) {
     if (busyJobs_ > 0) {
         QMessageBox::information(this, tr("Find a file"),
-            tr("Please wait — an operation is still running."));
+            tr("Please wait: an operation is still running."));
         ev->ignore();
         return;
     }
@@ -221,7 +221,7 @@ void FindDialog::closeEvent(QCloseEvent* ev) {
 void FindDialog::reject() {
     if (busyJobs_ > 0) {
         QMessageBox::information(this, tr("Find a file"),
-            tr("Please wait — an operation is still running."));
+            tr("Please wait: an operation is still running."));
         return;
     }
     QDialog::reject();

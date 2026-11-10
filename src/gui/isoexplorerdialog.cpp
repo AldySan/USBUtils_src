@@ -46,7 +46,7 @@ constexpr int kRoleNode = Qt::UserRole + 1;
 
 IsoExplorerDialog::IsoExplorerDialog(QWidget* parent, const QString& initialPath)
     : QDialog(parent), doc_(std::make_unique<usbutils::IsoImageDoc>()) {
-    setWindowTitle(tr("USBUtils — ISO explorer"));
+    setWindowTitle(tr("USBUtils: ISO explorer"));
     setWindowFlag(Qt::WindowMinMaxButtonsHint, true);
     resize(760, 540);
 
@@ -55,13 +55,14 @@ IsoExplorerDialog::IsoExplorerDialog(QWidget* parent, const QString& initialPath
     // ---- source + volume id row --------------------------------------------
     auto* topRow = new QHBoxLayout;
     sourceLine_ = new QLabel(tr("No image open."), this);
-    sourceLine_->setStyleSheet("color:#666;");
+    sourceLine_->setStyleSheet(QStringLiteral("color:%1;").arg(
+        palette().color(QPalette::Disabled, QPalette::WindowText).name()));
     topRow->addWidget(new QLabel(tr("Volume ID:"), this));
     volIdEdit_ = new QLineEdit(this);
     volIdEdit_->setEnabled(false);
     volIdEdit_->setMaxLength(32);
     volIdEdit_->setToolTip(tr("The image's name, as the console shows it. "
-                              "Editable — saved with the image."));
+                              "Editable: saved with the image."));
     connect(volIdEdit_, &QLineEdit::textEdited,
             this, &IsoExplorerDialog::onVolumeIdChanged);
     topRow->addWidget(volIdEdit_, 1);
@@ -110,7 +111,8 @@ IsoExplorerDialog::IsoExplorerDialog(QWidget* parent, const QString& initialPath
     root->addLayout(btnRow);
 
     infoLine_ = new QLabel(QString(), this);
-    infoLine_->setStyleSheet("color:#666;");
+    infoLine_->setStyleSheet(QStringLiteral("color:%1;").arg(
+        palette().color(QPalette::Disabled, QPalette::WindowText).name()));
     root->addWidget(infoLine_);
 
     if (!initialPath.isEmpty())
@@ -202,8 +204,8 @@ void IsoExplorerDialog::rebuildTree() {
                     QVariant::fromValue(reinterpret_cast<quintptr>(c.get())),
                     kRoleNode);
                 if (c->isExternal())
-                    nameItem->setToolTip(tr("Added or replaced — not part of "
-                                            "the original image."));
+                    nameItem->setToolTip(tr("Added or replaced (not part of "
+                                            "the original image)."));
                 auto* typeItem = new QStandardItem(
                     c->isDir ? tr("Folder") : tr("File"));
                 typeItem->setEditable(false);
@@ -264,7 +266,7 @@ void IsoExplorerDialog::updateInfoLine() {
         if (n == doc_->root()) return;
         if (n->isDir) ++dirs; else ++files;
     });
-    infoLine_->setText(tr("%1 folder(s), %2 file(s) — changes are only "
+    infoLine_->setText(tr("%1 folder(s), %2 file(s). Changes are only "
                           "written when you save a copy.")
                           .arg(dirs).arg(files));
     btnNewFolder_->setEnabled(true);
@@ -274,8 +276,8 @@ void IsoExplorerDialog::updateInfoLine() {
 
 void IsoExplorerDialog::setDirty(bool dirty) {
     dirty_ = dirty;
-    setWindowTitle(dirty_ ? tr("USBUtils — ISO explorer *")
-                          : tr("USBUtils — ISO explorer"));
+    setWindowTitle(dirty_ ? tr("USBUtils: ISO explorer *")
+                          : tr("USBUtils: ISO explorer"));
 }
 
 // ---------------------------------------------------------------------------
@@ -557,7 +559,7 @@ void IsoExplorerDialog::onTreeContextMenu(const QPoint& pos) {
 void IsoExplorerDialog::closeEvent(QCloseEvent* ev) {
     if (busyJobs_ > 0) {
         QMessageBox::information(this, tr("USBUtils"),
-            tr("Please wait — a file operation is still running."));
+            tr("Please wait: a file operation is still running."));
         ev->ignore();
         return;
     }
@@ -576,7 +578,7 @@ void IsoExplorerDialog::closeEvent(QCloseEvent* ev) {
 void IsoExplorerDialog::reject() {
     if (busyJobs_ > 0) {
         QMessageBox::information(this, tr("USBUtils"),
-            tr("Please wait — a file operation is still running."));
+            tr("Please wait: a file operation is still running."));
         return;
     }
     QDialog::reject();

@@ -85,7 +85,7 @@ private:
     QList<int> selectedRows() const;   ///< all marked games (Select system)
     void copyMoveCommon(bool move);
     void buildMenus();
-    void buildSupportPanel();          ///< "Useful acquired" status strip
+    void buildSupportPanel();          ///< "Support files" status strip
     void updateSupportPanel();
     /// Run `job` on a worker thread behind a cancelable modal progress
     /// dialog; `onDone(outcome)` runs on the GUI thread afterwards.
@@ -103,7 +103,7 @@ private:
     QPushButton*  btnOpen_    = nullptr;
     QPushButton*  btnSelectAll_  = nullptr;  ///< "Select" (mark all games)
     QPushButton*  btnInvert_     = nullptr;  ///< "Inverse selection"
-    QGroupBox*    supportPanel_  = nullptr;  ///< "Useful acquired" strip
+    QGroupBox*    supportPanel_  = nullptr;  ///< "Support files" strip
     QWidget*      actionsPanel_ = nullptr;   ///< disabled while busy
 
     QString dir_;

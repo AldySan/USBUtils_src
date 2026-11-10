@@ -191,7 +191,7 @@ void GameFilesDialog::extractSelected() {
                     tr("Saved a copy to:\n%1").arg(out));
             else if (cancelled->load())
                 QMessageBox::information(this, windowTitle(),
-                    tr("Copy cancelled — nothing was written."));
+                    tr("Copy cancelled: nothing was written."));
             else
                 QMessageBox::critical(this, windowTitle(),
                     tr("Could not copy the file out of the game."));
@@ -282,7 +282,7 @@ void GameFilesDialog::replaceFile() {
 void GameFilesDialog::closeEvent(QCloseEvent* ev) {
     if (busyJobs_ > 0) {
         QMessageBox::information(this, windowTitle(),
-            tr("Please wait — an operation is still running."));
+            tr("Please wait: an operation is still running."));
         ev->ignore();
         return;
     }
@@ -295,7 +295,7 @@ void GameFilesDialog::closeEvent(QCloseEvent* ev) {
 void GameFilesDialog::reject() {
     if (busyJobs_ > 0) {
         QMessageBox::information(this, windowTitle(),
-            tr("Please wait — an operation is still running."));
+            tr("Please wait: an operation is still running."));
         return;
     }
     QDialog::reject();

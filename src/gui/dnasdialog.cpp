@@ -24,7 +24,7 @@ DnasDialog::DnasDialog(const QString& dir, const QString& gameName,
                        uint32_t parts, QWidget* parent)
     : QDialog(parent), dir_(dir), idHex_(idHex), serial_(serial),
       gameName_(gameName), parts_(parts) {
-    setWindowTitle(tr("DNAS patch — %1").arg(gameName_));
+    setWindowTitle(tr("DNAS patch: %1").arg(gameName_));
     setModal(true);
 
     auto* root = new QVBoxLayout(this);
@@ -47,7 +47,7 @@ DnasDialog::DnasDialog(const QString& dir, const QString& gameName,
     auto* intro = new QLabel(tr(
         "Some games fail to go online with a DNAS error. This replaces the "
         "small system file inside the installed game with one from the "
-        "package — nothing else on the drive is touched."), this);
+        "package: nothing else on the drive is touched."), this);
     intro->setWordWrap(true);
     root->addWidget(intro);
 
@@ -122,7 +122,7 @@ void DnasDialog::loadIndex() {
     QSettings s;
     s.setValue("dnas/dni", dni);
     s.setValue("dnas/dna", dna);
-    status_->setText(tr("Ready — %1 version(s) available.")
+    status_->setText(tr("Ready: %1 version(s) available.")
                          .arg(verCombo_->count()));
     btnPatch_->setEnabled(true);
 }
@@ -158,7 +158,7 @@ void DnasDialog::patch() {
 
     if (n < 0) {
         QMessageBox::critical(this, tr("DNAS patch"),
-            tr("Patch failed — the game has no patchable system file, "
+            tr("Patch failed: the game has no patchable system file, "
                "or the replacement is too large for it."));
         return;
     }

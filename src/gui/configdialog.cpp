@@ -34,7 +34,7 @@ QString humanSize(uint64_t b) {
 } // namespace
 
 ConfigDialog::ConfigDialog(QWidget* parent) : QDialog(parent) {
-    setWindowTitle(tr("USBUtils — current configuration"));
+    setWindowTitle(tr("USBUtils: current configuration"));
     setModal(true);
     resize(720, 480);
 
@@ -53,13 +53,14 @@ ConfigDialog::ConfigDialog(QWidget* parent) : QDialog(parent) {
     auto* row = new QHBoxLayout;
     auto* note = new QLabel(tr(
         "This is the tool's live configuration. Everything is detected "
-        "automatically — nothing to edit here."), this);
-    note->setStyleSheet("color:#666;");
+        "automatically. Nothing to edit here."), this);
+    note->setStyleSheet(QStringLiteral("color:%1;").arg(
+        palette().color(QPalette::Disabled, QPalette::WindowText).name()));
     note->setWordWrap(true);
     row->addWidget(note, 1);
     btnCopy_ = new QPushButton(tr("Copy as text"), this);
-    btnCopy_->setToolTip(tr("Put the whole configuration on the clipboard — "
-                            "useful for bug reports."));
+    btnCopy_->setToolTip(tr("Put the whole configuration on the clipboard "
+                            "(useful for bug reports)."));
     connect(btnCopy_, &QPushButton::clicked, this, &ConfigDialog::copyToClipboard);
     row->addWidget(btnCopy_);
     auto* btnClose = new QPushButton(tr("Close"), this);
@@ -105,7 +106,7 @@ void ConfigDialog::rebuild() {
     }
 
     // ---- support files ("Useful acquired") ------------------------------------
-    auto* sfCat = new QTreeWidgetItem(tree_, {tr("Support files (Useful acquired)")});
+    auto* sfCat = new QTreeWidgetItem(tree_, {tr("Support files")});
     sfCat->setFirstColumnSpanned(true);
 
     const std::vector<SupportStatus> st = checkSupportFiles();
@@ -115,9 +116,9 @@ void ConfigDialog::rebuild() {
         if (s.found) ++foundCount;
         QString value, detail;
         if (s.found) {
-            value = s.verified ? tr("Found — original")
+            value = s.verified ? tr("Found (original)")
                                : tr("Found (differs from original)");
-            detail = QString("%1 — %2")
+            detail = QString("%1 (%2)")
                 .arg(QDir::toNativeSeparators(
                     QString::fromStdString(s.foundPath)))
                 .arg(humanSize(s.size));
@@ -145,7 +146,7 @@ void ConfigDialog::rebuild() {
     auto* upCat = new QTreeWidgetItem(tree_, {tr("Update checks")});
     upCat->setFirstColumnSpanned(true);
     new QTreeWidgetItem(upCat, {tr("Automatic check"),
-        tr("at every startup"), tr("Silent — only reports newer releases")});
+        tr("at every startup"), tr("Silent (only reports newer releases)")});
     new QTreeWidgetItem(upCat, {tr("Last check"),
         ctx_.lastUpdateCheck.isEmpty() ? tr("(not checked yet)")
                                        : ctx_.lastUpdateCheck, QString()});
@@ -157,7 +158,7 @@ void ConfigDialog::rebuild() {
 }
 
 void ConfigDialog::copyToClipboard() {
-    QString text = QStringLiteral("USBUtils %1 — configuration\n")
+    QString text = QStringLiteral("USBUtils %1 configuration\n")
                        .arg(QString::fromLatin1(USBUTILS_VERSION));
     std::function<void(QTreeWidgetItem*)> walk =
         [&](QTreeWidgetItem* it) {
@@ -169,7 +170,7 @@ void ConfigDialog::copyToClipboard() {
                 } else {
                     text += QStringLiteral("%1: %2").arg(c->text(0), c->text(1));
                     if (!c->text(2).isEmpty())
-                        text += QStringLiteral(" — %3").arg(c->text(2));
+                        text += QStringLiteral(" (%3)").arg(c->text(2));
                     text += QLatin1Char('\n');
                 }
             }

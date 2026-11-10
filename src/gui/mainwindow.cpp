@@ -77,7 +77,7 @@ static QString humanSize(uint64_t b) {
 }
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
-    setWindowTitle(tr("USBUtils %1 — PS2 USBExtreme manager")
+    setWindowTitle(tr("USBUtils %1 (PS2 USBExtreme manager)")
                        .arg(QString::fromLatin1(USBUTILS_VERSION)));
     resize(860, 560);
 
@@ -108,14 +108,14 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     // ---- welcome state (before a drive is opened) ------------------------
     welcome_ = new QLabel(tr(
-        "<div style='color:#555; font-size:14pt;'>"
+        "<div style='font-size:14pt;'>"
         "<b>Welcome to USBUtils!</b></div>"
-        "<div style='color:#555;'><br/>"
+        "<div><br/>"
         "This tool puts PlayStation 2 games on a USB drive so the console "
         "can play them without discs.<br/><br/>"
         "1. Plug in your USB drive (it should be FAT32)<br/>"
         "2. Pick the drive at the top<br/>"
-        "3. Click <b>Open games list</b> — then install your first game"
+        "3. Click <b>Open games list</b>, then install your first game"
         "</div>"), this);
     welcome_->setAlignment(Qt::AlignTop | Qt::AlignHCenter);
     welcome_->setContentsMargins(24, 24, 24, 24);
@@ -161,6 +161,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     // ---- "Useful acquired" strip (original Panel29/ListBox9): support files --
     buildSupportPanel();
+    root->addWidget(supportPanel_);
 
     // ---- buttons -----------------------------------------------------------
     actionsPanel_ = new QWidget(this);
@@ -237,7 +238,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     btnDnas->setToolTip(tr("Fix the DNAS error that stops some games from "
                            "going online."));
     btnPs2->setToolTip(tr("Swap a game's boot program for the PS2Load "
-                          "helper — helps stubborn games boot from USB."));
+                          "helper. It helps stubborn games boot from USB."));
     connect(btnFiles,  &QPushButton::clicked, this, &MainWindow::gameFilesSelected);
     connect(btnVideos, &QPushButton::clicked, this, &MainWindow::videoRipSelected);
     connect(btnDnas,   &QPushButton::clicked, this, &MainWindow::dnasPatchSelected);
@@ -252,7 +253,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     // ---- progress + status --------------------------------------------------
     progress_ = new QProgressBar(this);
     progress_->hide();
-    status_ = new QLabel(tr("Ready — select a USB drive and open its games list."), this);
+    status_ = new QLabel(tr("Ready: select a USB drive and open its games list."), this);
     root->addWidget(progress_);
     root->addWidget(status_);
 
@@ -408,7 +409,7 @@ QList<int> MainWindow::selectedRows() const {
 void MainWindow::closeEvent(QCloseEvent* ev) {
     if (busyJobs_ > 0) {
         QMessageBox::information(this, tr("USBUtils"),
-            tr("Please wait — an operation is still running (or cancel it)."));
+            tr("Please wait: an operation is still running (or cancel it)."));
         ev->ignore();
         return;
     }
@@ -474,14 +475,14 @@ void MainWindow::refreshDrives() {
         status_->setText(tr("No removable drives found. Plug in your USB "
                             "drive and click \"Refresh drives\"."));
         welcome_->setText(tr(
-            "<div style='color:#555; font-size:14pt;'>"
+            "<div style='font-size:14pt;'>"
             "<b>Welcome to USBUtils!</b></div>"
-            "<div style='color:#555;'><br/>"
+            "<div><br/>"
             "This tool puts PlayStation 2 games on a USB drive so the console "
             "can play them without discs.<br/><br/>"
             "1. Plug in your USB drive (it should be FAT32)<br/>"
             "2. Click <b>Refresh drives</b> above<br/>"
-            "3. Click <b>Open games list</b> — then install your first game"
+            "3. Click <b>Open games list</b>, then install your first game"
             "</div>"));
         welcome_->show();
         gameList_->hide();
@@ -523,7 +524,7 @@ void MainWindow::refreshGames() {
     QString msg = tr("%1 game(s) on %2").arg(cfg_->records.size()).arg(dir_);
     uint64_t freeB = 0, totalB = 0;
     if (fsSpace(dir_.toStdString(), freeB, totalB))
-        msg += tr("  —  %1 free of %2").arg(humanSize(freeB)).arg(humanSize(totalB));
+        msg += tr("  (%1 free of %2)").arg(humanSize(freeB)).arg(humanSize(totalB));
     status_->setText(msg);
 }
 
@@ -572,7 +573,7 @@ void MainWindow::installIso() {
             const InstallResult r = usbutils::installIso(
                 iso.toStdString(), dir.toStdString(), opt, prog, cancel);
             if (r.ok)
-                return {true, QString("Installed \"%1\" — parts: %2, %3 written.")
+                return {true, QString("Installed \"%1\" (parts: %2, %3 written).")
                             .arg(name).arg(r.parts).arg(humanSize(r.totalBytes))};
             return {false, QString::fromStdString(r.error)};
         },
@@ -695,7 +696,7 @@ void MainWindow::installFromDisc() {
             const InstallResult r = usbutils::installIso(
                 dev.toStdString(), dir.toStdString(), opt, prog, cancel);
             if (r.ok)
-                return {true, QString("Installed \"%1\" — parts: %2, %3 written.")
+                return {true, QString("Installed \"%1\" (parts: %2, %3 written).")
                             .arg(name).arg(r.parts).arg(humanSize(r.totalBytes))};
             return {false, QString::fromStdString(r.error)};
         },
@@ -737,7 +738,7 @@ void MainWindow::closeUlCfg() {
     if (!cfg_ && dir_.isEmpty()) return;
     if (busyJobs_ > 0) {
         QMessageBox::information(this, tr("USBUtils"),
-            tr("Please wait — an operation is still running."));
+            tr("Please wait: an operation is still running."));
         return;
     }
     cfg_.reset();
@@ -789,10 +790,11 @@ void MainWindow::invertSelection() {
 // ---------------------------------------------------------------------------
 
 void MainWindow::buildSupportPanel() {
-    supportPanel_ = new QGroupBox(tr("Useful acquired — support files"), this);
+    supportPanel_ = new QGroupBox(tr("Support files"), this);
     supportPanel_->setToolTip(tr(
-        "Shows whether the files that some tools need are present. All of "
-        "them ship with USBUtils in the 'data' folder next to the program."));
+        "Shows whether the files that some tools need are present (the "
+        "original's \"Useful acquired\" panel). All of them ship with "
+        "USBUtils in the 'data' folder next to the program."));
     auto* lay = new QHBoxLayout(supportPanel_);
     lay->setContentsMargins(8, 4, 8, 4);
     lay->addStretch(1);
@@ -816,8 +818,11 @@ void MainWindow::updateSupportPanel() {
     auto* lay = static_cast<QHBoxLayout*>(supportPanel_->layout());
     auto* summary = new QLabel(
         tr("%1/%2 present").arg(found).arg(total), supportPanel_);
-    const QString color = (found == total) ? QStringLiteral("#1a7f37")
-                                            : QStringLiteral("#b45309");
+    // AA-safe status colors for light and dark system themes
+    const bool dark = palette().color(QPalette::Window).lightness() < 128;
+    const QString color = (found == total)
+        ? (dark ? QStringLiteral("#6ee08a") : QStringLiteral("#146c43"))
+        : (dark ? QStringLiteral("#f6ad55") : QStringLiteral("#b45309"));
     summary->setStyleSheet(QStringLiteral("color:%1; font-weight:bold;")
                                .arg(color));
     lay->addWidget(summary);
@@ -830,13 +835,13 @@ void MainWindow::updateSupportPanel() {
         auto* chip = new QLabel(QString::fromLatin1(s.file.fileName),
                                 supportPanel_);
         chip->setToolTip(s.found
-            ? tr("Needed for: %1 — found").arg(
+            ? tr("Needed for: %1 (found)").arg(
                 QString::fromLatin1(s.file.feature))
-            : tr("Needed for: %1 — MISSING").arg(
+            : tr("Needed for: %1 (MISSING)").arg(
                 QString::fromLatin1(s.file.feature)));
         chip->setStyleSheet(QStringLiteral(
             "padding:1px 7px; border-radius:7px; color:%1; background:%2;")
-            .arg(s.found ? QStringLiteral("#1a7f37")
+            .arg(s.found ? QStringLiteral("#146c43")
                          : QStringLiteral("#b91c1c"))
             .arg(s.found ? QStringLiteral("#e6f4ea")
                          : QStringLiteral("#fde8e8")));
@@ -1088,7 +1093,7 @@ void MainWindow::checkStructure() {
         const StructureReport rep = usbutils::checkStructure(dir_.toStdString(), id, r.serialStr(), r.parts);
         if (!rep.ok()) {
             ++bad;
-            report += QString("[%1] %2 — missing parts: ").arg(i)
+            report += QString("[%1] %2, missing parts: ").arg(i)
                         .arg(QString::fromStdString(r.nameStr()));
             for (uint32_t m : rep.missing) report += QString("%1 ").arg(m, 2, 10, QChar('0'));
             report += "\n";
@@ -1125,7 +1130,7 @@ void MainWindow::fixBrokenSerials() {
     const auto preview = usbutils::fixBrokenSerials(dir_.toStdString(), *cfg_, false);
     if (preview.empty()) {
         QMessageBox::information(this, tr("Fix broken serial codes"),
-            tr("No broken serial codes (666.66) found — everything looks "
+            tr("No broken serial codes (666.66) found. Everything looks "
                "fine."));
         return;
     }
@@ -1209,7 +1214,7 @@ void MainWindow::sortGamesList() {
     }
     if (cfg_->records.size() < 2) {
         QMessageBox::information(this, tr("Sort games"),
-            tr("Nothing to sort — fewer than two games on the list."));
+            tr("Nothing to sort: fewer than two games on the list."));
         return;
     }
     // operate on the OPENED list (dir_), not on whatever the combo shows —
@@ -1218,12 +1223,12 @@ void MainWindow::sortGamesList() {
     const bool ok = usbutils::sortGames(dir_.toStdString(), &moved);
     if (!ok) {
         QMessageBox::warning(this, tr("Sort games"),
-            tr("Could not write ul.cfg — the list was not changed."));
+            tr("Could not write ul.cfg. The list was not changed."));
         return;
     }
     refreshGames();
     QMessageBox::information(this, tr("Sort games"),
-        moved ? tr("Done — the list is now sorted from A to Z (%1 game(s) "
+        moved ? tr("Done. The list is now sorted from A to Z (%1 game(s) "
                    "changed place).").arg(quint64(moved))
               : tr("The list is already sorted from A to Z."));
 }
@@ -1254,7 +1259,7 @@ void MainWindow::cleanDriveSpace() {
 
     if (rep.obsolete.empty()) {
         QMessageBox::information(this, tr("Clean up drive space"),
-            msg + tr("\n\nNothing to clean — no left-over files."));
+            msg + tr("\n\nNothing to clean: no left-over files."));
         return;
     }
 
@@ -1270,7 +1275,7 @@ void MainWindow::cleanDriveSpace() {
     if (!orphans.empty())
         msg += tr("\n\nNote: %1 game(s) look recoverable (they are not on "
                   "the list yet). Use \"Recover games...\" first if you "
-                  "want to keep them — cleaning now deletes their "
+                  "want to keep them. Cleaning now deletes their "
                   "files.").arg(quint64(orphans.size()));
 
     if (QMessageBox::question(this, tr("Clean up drive space"), msg +
@@ -1282,11 +1287,11 @@ void MainWindow::cleanDriveSpace() {
     QApplication::restoreOverrideCursor();
     if (removed == static_cast<int>(rep.obsoleteFiles))
         QMessageBox::information(this, tr("Clean up drive space"),
-            tr("Done — deleted %1 file(s) and freed up %2.")
+            tr("Done: deleted %1 file(s) and freed up %2.")
                 .arg(removed).arg(humanSize(rep.obsoleteBytes)));
     else
         QMessageBox::warning(this, tr("Clean up drive space"),
-            tr("Deleted %1 of %2 file(s) — the rest could not be removed "
+            tr("Deleted %1 of %2 file(s). The rest could not be removed "
                "(check that the drive is not write-protected).")
                 .arg(removed).arg(quint64(rep.obsoleteFiles)));
     refreshGames();
@@ -1518,6 +1523,6 @@ void MainWindow::about() {
            "by ISEKO (2009).<br/><br/>"
            "Reverse-engineering notes and on-disk format documentation ship "
            "in the <code>docs/</code> folder of the repository.<br/><br/>"
-           "MIT licensed — see LICENSE.")
+           "MIT licensed (see LICENSE).")
             .arg(QString::fromLatin1(USBUTILS_VERSION)));
 }

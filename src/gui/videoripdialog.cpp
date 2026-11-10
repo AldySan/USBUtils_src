@@ -36,7 +36,7 @@ VideoRipDialog::VideoRipDialog(const QString& dir, const QString& gameName,
                                uint32_t parts, QWidget* parent)
     : QDialog(parent), dir_(dir), idHex_(idHex), serial_(serial),
       gameName_(gameName), parts_(parts) {
-    setWindowTitle(tr("Videos — %1").arg(gameName_));
+    setWindowTitle(tr("Videos: %1").arg(gameName_));
     setModal(true);
     resize(620, 420);
     buildUi();
@@ -180,7 +180,7 @@ void VideoRipDialog::updateInfo() {
     if (backup > 0)
         text += tr(" Backup on drive: %1.").arg(humanSize(backup));
     else if (off > 0)
-        text += tr(" (No backup exists for those — they cannot be turned back on.)");
+        text += tr(" (No backup exists for those. They cannot be turned back on.)");
     info_->setText(text);
     btnRip_->setEnabled(!videos_.empty());
 }
@@ -302,7 +302,7 @@ void VideoRipDialog::restoreAll() {
 void VideoRipDialog::closeEvent(QCloseEvent* ev) {
     if (busyJobs_ > 0) {
         QMessageBox::information(this, tr("Videos"),
-            tr("Please wait — an operation is still running (or cancel it)."));
+            tr("Please wait: an operation is still running (or cancel it)."));
         ev->ignore();
         return;
     }
@@ -315,7 +315,7 @@ void VideoRipDialog::closeEvent(QCloseEvent* ev) {
 void VideoRipDialog::reject() {
     if (busyJobs_ > 0) {
         QMessageBox::information(this, tr("Videos"),
-            tr("Please wait — an operation is still running (or cancel it)."));
+            tr("Please wait: an operation is still running (or cancel it)."));
         return;
     }
     QDialog::reject();
