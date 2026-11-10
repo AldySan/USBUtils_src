@@ -362,13 +362,12 @@ CopyResult copyGame(const std::string& srcDir, UlCfg& srcCfg, size_t index,
         written.push_back(to);
     }
 
-    // carry over the video-rip sidecar so ripped games stay reversible
-    const std::string sidecarFrom =
-        joinPath(srcDir, chunkFileName(id, serial, 0) + ".rip");
-    const std::string sidecarTo =
-        joinPath(destDir, chunkFileName(id, serial, 0) + ".rip");
-    uint64_t sidecarBytes = 0;
-    if (fs::exists(sidecarFrom)) {
+    // carry over every rip backup sidecar (.rip / .arip) so ripped
+    // games stay reversible on the destination drive too
+    for (const std::string& scName : backupFileNames(id, serial)) {
+        const std::string sidecarFrom = joinPath(srcDir, scName);
+        if (!fs::exists(sidecarFrom)) continue;
+        const std::string sidecarTo = joinPath(destDir, scName);
         const uint64_t sc = copyFile(sidecarFrom, sidecarTo, done, total,
                                      progress, cancelled, res.error);
         if (sc == UINT64_MAX) {
@@ -376,7 +375,6 @@ CopyResult copyGame(const std::string& srcDir, UlCfg& srcCfg, size_t index,
             std::remove(sidecarTo.c_str());
             return res;
         }
-        sidecarBytes = sc - done;
         done = sc;
         written.push_back(sidecarTo);
     }
@@ -394,14 +392,15 @@ CopyResult copyGame(const std::string& srcDir, UlCfg& srcCfg, size_t index,
 
     if (deleteSource) {
         // mirror the original's move semantics: delete source data + record
-        if (fs::exists(sidecarFrom)) std::remove(sidecarFrom.c_str());
+        // (every sidecar that existed was copied above)
+        for (const std::string& scName : backupFileNames(id, serial))
+            std::remove(joinPath(srcDir, scName).c_str());
         srcCfg.removeGame(index);
     }
 
     res.ok = true;
     res.copiedBytes = done;
     res.filesWritten = static_cast<int>(written.size()) + 1;   // + ul.cfg
-    (void)sidecarBytes;
     return res;
 }
 
@@ -637,7 +636,8 @@ DriveSpaceReport scanDriveSpace(const std::string& dir) {
     const bool haveCfg = cfg.load(dir);
     if (haveCfg) rep.games = cfg.records.size();
 
-    // Files a game claims: its chunk files + the video-rip sidecar.
+    // Files a game claims: its chunk files + the rip backup sidecars
+    // (.rip video / .arip audio).
     std::set<std::string> referenced;   // lower-cased names
     if (haveCfg) {
         for (const UlCfgRecord& r : cfg.records) {
@@ -647,8 +647,8 @@ DriveSpaceReport scanDriveSpace(const std::string& dir) {
                 std::string n = chunkFileName(id, r.serialStr(), i);
                 referenced.insert(toLowerAscii(n));
             }
-            std::string rip = chunkFileName(id, r.serialStr(), 0) + ".rip";
-            referenced.insert(toLowerAscii(rip));
+            for (const std::string& b : backupFileNames(id, r.serialStr()))
+                referenced.insert(toLowerAscii(b));
         }
     }
 

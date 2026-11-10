@@ -73,8 +73,9 @@ static size_t putDirRecord(std::vector<uint8_t>& dir, size_t off,
 /// Build a minimal ISO9660 image with SYSTEM.CNF, a MOVIES directory
 /// holding INTRO.PSS, and an IOPRP300.IMG — enough structure to exercise
 /// the walker, the video ripper and the DNAS locator. With `withAudio`, an
-/// AUDIO directory (MUSIC.VAG + SOUND.ADS) is appended after the IOPRP
-/// image for the audio ripper.
+/// AUDIO directory (MUSIC.VAG + SOUND.ADS + PAD.VB) is appended after the
+/// IOPRP image for the audio ripper; PAD.VB opens with 16 zero bytes to
+/// exercise the blanked-media probe.
 static void writeTestIso(const fs::path& p, const std::string& serial,
                          uint64_t payloadBytes, bool withExtras = true,
                          bool withAudio = false) {
@@ -86,8 +87,9 @@ static void writeTestIso(const fs::path& p, const std::string& serial,
     const uint32_t audioDirLba = 26;
     const uint32_t vagLba = 27, vagSize = 2 * sector;
     const uint32_t adsLba = 29, adsSize = sector;
+    const uint32_t padLba = 30, padSize = sector;
     uint32_t dataEnd = withExtras ? ioprpLba : 21;
-    if (withAudio) dataEnd = adsLba + 1;
+    if (withAudio) dataEnd = padLba + 1;
     const uint32_t totalSectors =
         dataEnd +
         static_cast<uint32_t>((payloadBytes + sector - 1) / sector) + 1;
@@ -173,6 +175,7 @@ static void writeTestIso(const fs::path& p, const std::string& serial,
         aoff += putDirRecord(adir, aoff, rootLba, rootSize, 2, std::string(1, '\1'));
         aoff += putDirRecord(adir, aoff, vagLba, vagSize, 0, "MUSIC.VAG;1");
         aoff += putDirRecord(adir, aoff, adsLba, adsSize, 0, "SOUND.ADS;1");
+        aoff += putDirRecord(adir, aoff, padLba, padSize, 0, "PAD.VB;1");
         img.insert(img.end(), adir.begin(), adir.end());
 
         // sectors 27-28: music payload
@@ -186,6 +189,13 @@ static void writeTestIso(const fs::path& p, const std::string& serial,
         for (size_t i = 0; i < ads.size(); ++i)
             ads[i] = static_cast<uint8_t>((i * 5 + 3) & 0xFF);
         img.insert(img.end(), ads.begin(), ads.end());
+
+        // sector 30: raw VAB body opening with digital silence (16 zero
+        // bytes, then a pattern) — must NOT look like an already-ripped file
+        std::vector<uint8_t> pad(padSize, 0);
+        for (size_t i = 16; i < pad.size(); ++i)
+            pad[i] = static_cast<uint8_t>((i * 9 + 7) & 0xFF);
+        img.insert(img.end(), pad.begin(), pad.end());
     }
 
     // trailing generic payload (padded to a full sector like real ISOs,
@@ -685,8 +695,8 @@ static void testAudioRip() {
     std::string err;
     auto audios = scanAudios(base.string(), id, serial, 1, &err);
     CHECK(err.empty());
-    CHECK(audios.size() == 2);
-    if (audios.size() == 2) {
+    CHECK(audios.size() == 3);
+    if (audios.size() == 3) {
         CHECK(audios[0].path == "AUDIO\\MUSIC.VAG");
         CHECK(audios[0].offset == 27ull * 2048);
         CHECK(audios[0].size == 2 * 2048);
@@ -695,6 +705,12 @@ static void testAudioRip() {
         CHECK(audios[1].offset == 29ull * 2048);
         CHECK(audios[1].size == 2048);
         CHECK(!audios[1].blanked);
+        CHECK(audios[2].path == "AUDIO\\PAD.VB");
+        CHECK(audios[2].offset == 30ull * 2048);
+        CHECK(audios[2].size == 2048);
+        // 16 leading zero bytes (digital silence) must NOT read as blanked —
+        // the probe requires a full zero sector
+        CHECK(!audios[2].blanked);
     }
 
     // the video scan is unaffected by the audio feature
@@ -731,16 +747,41 @@ static void testAudioRip() {
     // rescan reports the state
     audios = scanAudios(base.string(), id, serial, 1, &err);
     CHECK(err.empty());
-    CHECK(audios.size() == 2);
+    CHECK(audios.size() == 3);
     CHECK(audios[0].blanked);
     CHECK(audios[0].hasBackup);
     CHECK(!audios[1].blanked);
+    CHECK(!audios[2].blanked);
 
     // ---- video and audio rips coexist -------------------------------------
     videos = scanVideos(base.string(), id, serial, 1, &err);
     CHECK(ripVideos(base.string(), id, serial, 1, videos, true).ok);
     CHECK(fs::exists(base / rip));
     CHECK(fs::exists(base / arip));
+
+    // ---- drive tools must claim BOTH sidecars (audit 002, R1) -------------
+    {
+        const DriveSpaceReport rep = scanDriveSpace(base.string());
+        CHECK(rep.obsoleteFiles == 0);   // .rip and .arip are game files
+        CHECK(rep.gameFiles == 3);       // 1 chunk + 2 sidecars
+    }
+
+    // ---- copy carries both sidecars (audit 002, R2) -----------------------
+    {
+        const fs::path dest = base / "dest";
+        fs::remove_all(dest);
+        fs::create_directories(dest);
+        UlCfg srcCfg;
+        CHECK(srcCfg.load(base.string()));
+        const CopyResult cr =
+            copyGame(base.string(), srcCfg, 0, dest.string(), false);
+        CHECK(cr.ok);
+        CHECK(fs::exists(dest / rip));
+        CHECK(filesEqual(base / rip, dest / rip));
+        CHECK(fs::exists(dest / arip));
+        CHECK(filesEqual(base / arip, dest / arip));
+        fs::remove_all(dest);
+    }
 
     // ---- restore audio; the video rip survives ----------------------------
     const RipResult rv = restoreAudios(base.string(), id, serial, 1);
@@ -766,6 +807,24 @@ static void testAudioRip() {
                         (base / "back.iso").string()));
         CHECK(filesEqual(iso, base / "back.iso"));
     }
+
+    // ---- a no-backup rip is still detected by the zero probe --------------
+    audios = scanAudios(base.string(), id, serial, 1, &err);
+    CHECK(err.empty());
+    CHECK(audios.size() == 3);
+    CHECK(!audios[2].blanked);
+    {
+        const RipResult rn = ripAudios(base.string(), id, serial, 1,
+                                      {audios[2]}, /*makeBackup*/ false);
+        CHECK(rn.ok);
+        CHECK(rn.rippedCount == 1);
+        CHECK(rn.blankedBytes == 2048);
+        CHECK(rn.backupBytes == 0);
+    }
+    audios = scanAudios(base.string(), id, serial, 1, &err);
+    CHECK(audios.size() == 3);
+    CHECK(audios[2].blanked);          // fully zeroed: probe hits
+    CHECK(!audios[2].hasBackup);
 
     fs::remove_all(base);
 }
@@ -1120,6 +1179,15 @@ static void testGameOps() {
         src.records[0].setSerial(brokenSerial);
         CHECK(src.save());
 
+        // fake rip backups under the broken serial — the fix must carry
+        // both sidecars along with the chunks (audit 002, R2)
+        const std::string ripBroken  = "ul." + gid + "." + brokenSerial + ".00.rip";
+        const std::string aripBroken = "ul." + gid + "." + brokenSerial + ".00.arip";
+        { FILE* f = std::fopen((dest2 / ripBroken).c_str(), "wb");
+          std::fputs("RIPDATA", f); std::fclose(f); }
+        { FILE* f = std::fopen((dest2 / aripBroken).c_str(), "wb");
+          std::fputs("ARIPDATA", f); std::fclose(f); }
+
         // dry run: sees the break, proposes the real serial
         UlCfg dry;
         CHECK(dry.load(dest2.string()));
@@ -1135,6 +1203,10 @@ static void testGameOps() {
         CHECK(dry.records[0].serialStr() == "SLUS_202.65");
         CHECK(fs::exists(dest2 / ("ul." + gid + "." + serial + ".00")));
         CHECK(!fs::exists(dest2 / ("ul." + gid + "." + brokenSerial + ".00")));
+        CHECK(fs::exists(dest2 / ("ul." + gid + "." + serial + ".00.rip")));
+        CHECK(fs::exists(dest2 / ("ul." + gid + "." + serial + ".00.arip")));
+        CHECK(!fs::exists(dest2 / ripBroken));
+        CHECK(!fs::exists(dest2 / aripBroken));
         CHECK(checkStructure(dest2.string(), gid, serial, 1).ok());
 
         // and the data is untouched
@@ -1206,9 +1278,11 @@ static void testSortAndClean() {
     CHECK(rep.gameFiles == 3);                           // one chunk each
 
     // ---- clean: stray chunk + rip sidecar protection ------------------------
-    // a video-rip sidecar of game[0] must count as a game file...
+    // a rip sidecar of game[0] (either flavor) must count as a game file...
     const std::string rip = "ul." + ids[0] + ".SLUS_200.01.00.rip";
+    const std::string arip = "ul." + ids[0] + ".SLUS_200.01.00.arip";
     { FILE* f = std::fopen((base / rip).c_str(), "wb"); std::fputc(1, f); std::fclose(f); }
+    { FILE* f = std::fopen((base / arip).c_str(), "wb"); std::fputc(1, f); std::fclose(f); }
     // ...while an unreferenced chunk from a deleted game is obsolete
     const std::string stray = "ul.DEADBEEF.SLUS_999.99.00";
     { FILE* f = std::fopen((base / stray).c_str(), "wb");
@@ -1217,13 +1291,14 @@ static void testSortAndClean() {
     rep = scanDriveSpace(base.string());
     CHECK(rep.obsoleteFiles == 1);
     CHECK(rep.obsoleteBytes == 4);
-    CHECK(rep.gameFiles == 4);                           // 3 chunks + sidecar
+    CHECK(rep.gameFiles == 5);                     // 3 chunks + 2 sidecars
     CHECK(rep.obsolete.size() == 1 && rep.obsolete[0] == stray);
 
     // restore space deletes the stray file only
     CHECK(restoreSpace(base.string(), rep) == 1);
     CHECK(!fs::exists(base / stray));
-    CHECK(fs::exists(base / rip));                       // sidecar survived
+    CHECK(fs::exists(base / rip));                 // sidecars survived
+    CHECK(fs::exists(base / arip));
     rep = scanDriveSpace(base.string());
     CHECK(rep.obsoleteFiles == 0);
 

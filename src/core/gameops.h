@@ -121,8 +121,9 @@ struct CopyResult {
 
 /// Copy one game (record + all chunk files) from `srcDir` to `destDir`.
 /// With `deleteSource` this becomes a move: the source chunks, the record
-/// and a video-rip sidecar are removed after a verified copy. Chunks are
-/// streamed 8 MiB at a time; the video-rip sidecar ("<first chunk>.rip")
+/// and the rip backup sidecars are removed after a verified copy. Chunks
+/// are streamed 8 MiB at a time; every rip backup sidecar ("<first
+/// chunk>.rip" video, "<first chunk>.arip" audio — see backupFileNames)
 /// is carried over when present so ripped games stay reversible. A game
 /// with the same id + serial already on the destination is an error.
 /// `srcCfg` is modified only for moves (the record is removed).

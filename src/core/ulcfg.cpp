@@ -2,6 +2,7 @@
 #include "ulcfg.h"
 #include "ulid.h"
 #include "gamefile.h"
+#include "videorip.h"     // backupFileNames — sidecars move with the game
 
 #include <cstdio>
 #include <utility>
@@ -185,11 +186,12 @@ bool UlCfg::renameSerial(size_t index, const std::string& newSerial,
         }
         moved.emplace_back(from, to);
     }
-    // carry the video-rip sidecar along (best effort — may not exist)
+    // carry the rip backup sidecars along (best effort — may not exist)
     {
-        const std::string from = joinPath(dir, chunkFileName(idHex, oldSerial, 0) + ".rip");
-        const std::string to   = joinPath(dir, chunkFileName(idHex, newSerial, 0) + ".rip");
-        fs::rename(from, to, ec);   // ignore errors
+        const std::vector<std::string> oldSc = backupFileNames(idHex, oldSerial);
+        const std::vector<std::string> newSc = backupFileNames(idHex, newSerial);
+        for (size_t i = 0; i < oldSc.size() && i < newSc.size(); ++i)
+            fs::rename(joinPath(dir, oldSc[i]), joinPath(dir, newSc[i]), ec);
     }
     r.setSerial(newSerial);
     if (!save()) {
@@ -200,9 +202,12 @@ bool UlCfg::renameSerial(size_t index, const std::string& newSerial,
             fs::rename(it->second, it->first, ec2);
         }
         {
-            std::error_code ec3;
-            fs::rename(joinPath(dir, chunkFileName(idHex, newSerial, 0) + ".rip"),
-                       joinPath(dir, chunkFileName(idHex, oldSerial, 0) + ".rip"), ec3);
+            const std::vector<std::string> oldSc = backupFileNames(idHex, oldSerial);
+            const std::vector<std::string> newSc = backupFileNames(idHex, newSerial);
+            for (size_t i = 0; i < oldSc.size() && i < newSc.size(); ++i) {
+                std::error_code ecS;
+                fs::rename(joinPath(dir, newSc[i]), joinPath(dir, oldSc[i]), ecS);
+            }
         }
         if (error) *error = "could not write ul.cfg (drive read-only or full?)";
         return false;

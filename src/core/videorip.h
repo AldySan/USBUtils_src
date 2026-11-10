@@ -30,7 +30,8 @@
 
 namespace usbutils {
 
-/// One video file found in a game's ISO directory.
+/// One media file found in a game's ISO directory (video or audio —
+/// the audio rip reuses this shape; see the audio section below).
 struct VideoEntry {
     std::string path;          ///< ISO path, e.g. "MOVIES\\INTRO.PSS"
     uint64_t    offset = 0;    ///< absolute byte offset in the game stream
@@ -112,5 +113,12 @@ std::string audioBackupFileName(const std::string& idHex,
 
 uint64_t audioBackupSize(const std::string& dir, const std::string& idHex,
                          const std::string& serial);
+
+/// File NAMES of every rip backup a game can have (video ".rip" and
+/// audio ".arip"). Drive-wide tools (space cleanup, copy/move) must
+/// go through this list so a new rip flavor can never be forgotten
+/// again (the audio sidecar once was — see audit 002, R1/R2).
+std::vector<std::string> backupFileNames(const std::string& idHex,
+                                         const std::string& serial);
 
 } // namespace usbutils

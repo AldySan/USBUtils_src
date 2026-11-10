@@ -211,10 +211,18 @@ bool saveSidecar(const std::string& path, const Sidecar& oldSc,
 }
 
 /// A media file is "blanked without backup" when its first sector is all
-/// zeros (video and audio payload both start with non-zero headers/data).
+/// zeros. The probe must be a FULL 2048-byte sector: 16 bytes used to be
+/// enough for video (.PSS starts with an MPEG-2 pack header), but raw
+/// audio (.VB bodies, .MIB streams) can legitimately begin with digital
+/// silence — ADPCM silence is zero bytes — and would be misreported as
+/// already blanked, which also makes ripMedia skip them. A headered
+/// audio file (.VAG "VAGp", .SS2 "SShd") can never pass this probe.
+/// Residual risk: a headerless stream opening with 2048 bytes of pure
+/// silence — accepted, and only the "no backup" state relies on it
+/// (sidecar entries are authoritative).
 bool looksBlanked(GameStream& stream, const VideoEntry& v) {
     if (v.size < 2048) return false;
-    uint8_t head[16] = {};
+    uint8_t head[2048] = {};
     if (stream.read(v.offset, head, sizeof(head)) != sizeof(head))
         return false;
     for (uint8_t b : head)
@@ -476,6 +484,12 @@ std::string audioBackupFileName(const std::string& idHex,
 uint64_t audioBackupSize(const std::string& dir, const std::string& idHex,
                          const std::string& serial) {
     return fileSizeBytes(joinPath(dir, audioBackupFileName(idHex, serial)));
+}
+
+std::vector<std::string> backupFileNames(const std::string& idHex,
+                                         const std::string& serial) {
+    return {videoBackupFileName(idHex, serial),
+            audioBackupFileName(idHex, serial)};
 }
 
 std::vector<VideoEntry> scanAudios(const std::string& dir,
