@@ -29,6 +29,7 @@ add_library(usbutils_core STATIC
     src/core/usbdevice.cpp
     src/core/videorip.cpp
     src/core/lzpack.cpp
+    src/core/isoshrink.cpp
     src/core/ps2load.cpp
     src/core/gameops.cpp
     src/core/update.cpp

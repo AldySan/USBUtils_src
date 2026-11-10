@@ -27,6 +27,7 @@
 #include "dnas.h"
 #include "videorip.h"
 #include "lzpack.h"
+#include "isoshrink.h"
 #include "ps2load.h"
 #include "gameops.h"
 #include "update.h"
@@ -1941,6 +1942,586 @@ static void testVersionCompare() {
     CHECK(!isVersionNewer("1.2.1", "1.2"));
 }
 
+// ---------------------------------------------------------------------------
+// iso shrink (scene-style rebuild: relink duplicates, collapse zero files,
+// compact, truncate)
+// ---------------------------------------------------------------------------
+
+/// Full-structure ISO9660 image: descriptor terminator, L/M + optional
+/// path tables, a DUMMIES subdirectory holding two byte-identical files
+/// (DUP1/DUP2), two all-zero dummy files of different sizes, a unique
+/// file, a bigger file, an unreferenced 2-sector gap and 6 sectors of
+/// trailing slack. 47 sectors — the shrink must compact it to 36.
+static void writeShrinkIso(const fs::path& p, const std::string& serial) {
+    const uint32_t sector = 2048;
+    const uint32_t rootLba = 22, dummiesLba = 23, cnfLba = 24;
+    const uint32_t dup1Lba = 25, dup2Lba = 29;        // 2 sectors each
+    const uint32_t dummy1Lba = 31;                    // 3 sectors (zero)
+    const uint32_t dummy2Lba = 34;                    // 1 sector  (zero)
+    const uint32_t uniqueLba = 35;                    // 100 bytes
+    const uint32_t bigLba = 36;                       // 5 sectors
+    const uint32_t totalSectors = 47;
+
+    std::vector<uint8_t> img(16 * sector, 0);
+
+    auto put32le = [](uint8_t* d, uint32_t v) {
+        d[0] = uint8_t(v); d[1] = uint8_t(v >> 8);
+        d[2] = uint8_t(v >> 16); d[3] = uint8_t(v >> 24);
+    };
+    auto put32be = [](uint8_t* d, uint32_t v) {
+        d[0] = uint8_t(v >> 24); d[1] = uint8_t(v >> 16);
+        d[2] = uint8_t(v >> 8); d[3] = uint8_t(v);
+    };
+    auto putPt = [](std::vector<uint8_t>& t, bool be, uint8_t di,
+                    uint32_t lba, const char* name) {
+        t.push_back(di); t.push_back(0);
+        if (be) for (int i = 3; i >= 0; --i) t.push_back(uint8_t(lba >> (8 * i)));
+        else     for (int i = 0; i < 4; ++i)  t.push_back(uint8_t(lba >> (8 * i)));
+        if (be) { t.push_back(0); t.push_back(1); }   // parent index 1 (BE)
+        else    { t.push_back(1); t.push_back(0); }   // parent index 1 (LE)
+        for (uint8_t i = 0; i < di; ++i) t.push_back(uint8_t(name[i]));
+        if (di & 1) t.push_back(0);
+    };
+
+    // ---- PVD at 16 --------------------------------------------------------
+    uint8_t pvd[sector] = {};
+    pvd[0] = 1;
+    std::memcpy(pvd + 1, "CD001", 5);
+    pvd[6] = 1;
+    std::memset(pvd + 40, ' ', 32);
+    std::memcpy(pvd + 40, "SHRINK_TEST", 11);
+    put32le(pvd + 80, totalSectors);
+    put32be(pvd + 84, totalSectors);
+    pvd[128] = 0x00; pvd[129] = 0x08;                // block size 2048 (LE)
+    pvd[130] = 0x08; pvd[131] = 0x00;                // ... and (BE)
+    put32le(pvd + 132, 26);                          // path table size
+    put32be(pvd + 136, 26);
+    put32le(pvd + 140, 18);                          // L table
+    put32le(pvd + 144, 20);                          // optional L
+    put32be(pvd + 148, 19);                          // M table
+    put32be(pvd + 152, 21);                          // optional M
+    uint8_t* root = pvd + 156;
+    root[0] = 34;
+    put32le(root + 2, rootLba);
+    put32le(root + 10, sector);
+    root[18] = 120; root[25] = 2; root[28] = 1; root[30] = 1; root[32] = 1;
+    img.insert(img.end(), pvd, pvd + sector);
+
+    // sector 17: terminator; 18-21: path tables (L, M, optL, optM)
+    {
+        uint8_t term[sector] = {};
+        term[0] = 255;
+        std::memcpy(term + 1, "CD001", 5);
+        term[6] = 1;
+        img.insert(img.end(), term, term + sector);
+    }
+    std::vector<uint8_t> ptL, ptM;
+    putPt(ptL, false, 1, rootLba, "\0");
+    putPt(ptL, false, 7, dummiesLba, "DUMMIES");
+    putPt(ptM, true, 1, rootLba, "\0");
+    putPt(ptM, true, 7, dummiesLba, "DUMMIES");
+    CHECK(ptL.size() == 26 && ptM.size() == 26);
+    for (int s = 0; s < 2; ++s) {
+        std::vector<uint8_t> pad(sector, 0);
+        std::memcpy(pad.data(), ptL.data(), ptL.size());
+        img.insert(img.end(), pad.begin(), pad.end());
+        std::fill(pad.begin(), pad.end(), 0);
+        std::memcpy(pad.data(), ptM.data(), ptM.size());
+        img.insert(img.end(), pad.begin(), pad.end());
+    }
+    CHECK(img.size() == 22ull * sector);
+
+    // ---- root directory at 22 ---------------------------------------------
+    {
+        std::vector<uint8_t> dir(sector, 0);
+        size_t off = 0;
+        off += putDirRecord(dir, off, rootLba, sector, 2, std::string(1, '\0'));
+        off += putDirRecord(dir, off, rootLba, sector, 2, std::string(1, '\1'));
+        off += putDirRecord(dir, off, cnfLba, 96, 0, "SYSTEM.CNF;1");
+        off += putDirRecord(dir, off, dummiesLba, sector, 2, "DUMMIES");
+        img.insert(img.end(), dir.begin(), dir.end());
+    }
+
+    // ---- DUMMIES at 23 ----------------------------------------------------
+    {
+        std::vector<uint8_t> dir(sector, 0);
+        size_t off = 0;
+        off += putDirRecord(dir, off, dummiesLba, sector, 2, std::string(1, '\0'));
+        off += putDirRecord(dir, off, rootLba, sector, 2, std::string(1, '\1'));
+        off += putDirRecord(dir, off, dup1Lba, 2 * sector, 0, "DUP1.BIN;1");
+        off += putDirRecord(dir, off, dup2Lba, 2 * sector, 0, "DUP2.BIN;1");
+        off += putDirRecord(dir, off, dummy1Lba, 3 * sector, 0, "DUMMY1.DAT;1");
+        off += putDirRecord(dir, off, dummy2Lba, sector, 0, "DUMMY2.DAT;1");
+        off += putDirRecord(dir, off, uniqueLba, 100, 0, "UNIQUE.DAT;1");
+        off += putDirRecord(dir, off, bigLba, 5 * sector, 0, "BIG.DAT;1");
+        img.insert(img.end(), dir.begin(), dir.end());
+    }
+
+    // ---- files ------------------------------------------------------------
+    img.resize(cnfLba * sector, 0);
+    std::string cnf = "BOOT2 = cdrom0:\\" + serial + ";1\nVER = 1.00\n";
+    cnf.resize(96, ' ');
+    img.insert(img.end(), cnf.begin(), cnf.end());
+
+    img.resize(dup1Lba * sector, 0);
+    std::vector<uint8_t> dup(2 * sector);
+    for (size_t i = 0; i < dup.size(); ++i)
+        dup[i] = uint8_t((i * 17 + 3) & 0xFF);
+    img.insert(img.end(), dup.begin(), dup.end());
+
+    img.resize(dup2Lba * sector, 0);                 // sectors 27-28 stay zero (gap)
+    img.insert(img.end(), dup.begin(), dup.end());
+
+    img.resize(dummy1Lba * sector, 0);
+    img.insert(img.end(), 3ull * sector, 0);         // DUMMY1 zeros
+    img.insert(img.end(), 1ull * sector, 0);         // DUMMY2 zeros
+
+    img.resize(uniqueLba * sector, 0);
+    std::vector<uint8_t> uniq(100);
+    for (size_t i = 0; i < uniq.size(); ++i)
+        uniq[i] = uint8_t((i * 29 + 7) & 0xFF);
+    img.insert(img.end(), uniq.begin(), uniq.end());
+
+    img.resize(bigLba * sector, 0);
+    std::vector<uint8_t> big(5 * sector);
+    for (size_t i = 0; i < big.size(); ++i)
+        big[i] = uint8_t((i * 11 + 13) & 0xFF);
+    img.insert(img.end(), big.begin(), big.end());
+
+    img.resize(totalSectors * sector, 0xCC);         // trailing slack
+
+    FILE* f = std::fopen(p.string().c_str(), "wb");
+    std::fwrite(img.data(), 1, img.size(), f);
+    std::fclose(f);
+}
+
+/// Walk a game's stream into a path -> entry map of its FILES.
+static std::map<std::string, IsoEntry> walkGameFiles(GameStream& s) {
+    std::map<std::string, IsoEntry> out;
+    const IsoReadFn read = [&s](uint64_t off, void* dst, size_t n) {
+        return s.read(off, dst, n) == n;
+    };
+    walkIso(read, [&](const IsoEntry& e) {
+        if (!e.isDir) out[e.path] = e;
+        return true;
+    });
+    return out;
+}
+
+static std::vector<uint8_t> readRange(GameStream& s, uint64_t off, size_t n) {
+    std::vector<uint8_t> buf(n);
+    if (s.read(off, buf.data(), n) != n) buf.clear();
+    return buf;
+}
+
+static void testShrink() {
+    const fs::path base = fs::temp_directory_path() / "usbutils_shrink";
+    fs::remove_all(base);
+    fs::create_directories(base);
+    const fs::path iso = base / "game.iso";
+    writeShrinkIso(iso, "SLUS_202.65");
+    CHECK(fs::file_size(iso) == 47ull * 2048);
+
+    InstallOptions opt;
+    opt.gameName = "Shrink Me";
+    const InstallResult ir = installIso(iso.string(), base.string(), opt);
+    CHECK(ir.ok);
+    if (!ir.ok) { fs::remove_all(base); return; }
+
+    // ---- analysis ---------------------------------------------------------
+    ShrinkInfo info = analyzeShrink(base.string(), ir.idHex, ir.serial,
+                                    ir.parts);
+    CHECK(info.ok);
+    CHECK(!info.hasRipBackups);
+    CHECK(!info.ps2LoadInjected);
+    CHECK(info.currentBytes == 47ull * 2048);
+    CHECK(info.duplicateBytes == 2ull * 2048);       // DUP2 == DUP1
+    CHECK(info.duplicateFiles == 1);
+    CHECK(info.zeroBytes == 2048);                   // DUMMY2 -> DUMMY1
+    CHECK(info.zeroFiles == 1);
+    CHECK(info.finalBytes == 36ull * 2048);
+    CHECK(info.gapBytes == 8ull * 2048);             // 2-sector gap + 6 slack
+    CHECK(info.savings() == 11ull * 2048);
+
+    // ---- apply ------------------------------------------------------------
+    const ShrinkResult r = shrinkGame(base.string(), ir.idHex, ir.serial,
+                                      ir.parts, /*discardBackups*/ false);
+    CHECK(r.ok);
+    CHECK(r.verified);
+    CHECK(r.oldBytes == 47ull * 2048);
+    CHECK(r.newBytes == 36ull * 2048);
+    CHECK(r.oldParts == 1 && r.newParts == 1);
+    if (!r.ok) { fs::remove_all(base); return; }
+
+    GameStream s;
+    CHECK(s.open(base.string(), ir.idHex, ir.serial, 1));
+    CHECK(s.size() == 36ull * 2048);
+
+    // every file still there, same size
+    const auto files = walkGameFiles(s);
+    CHECK(files.size() == 7);
+    CHECK(files.count("SYSTEM.CNF") && files.at("SYSTEM.CNF").size == 96);
+    CHECK(files.count("DUMMIES\\DUP1.BIN")
+          && files.at("DUMMIES\\DUP1.BIN").size == 2ull * 2048);
+    CHECK(files.count("DUMMIES\\DUP2.BIN")
+          && files.at("DUMMIES\\DUP2.BIN").size == 2ull * 2048);
+    CHECK(files.count("DUMMIES\\DUMMY1.DAT")
+          && files.at("DUMMIES\\DUMMY1.DAT").size == 3ull * 2048);
+    CHECK(files.count("DUMMIES\\DUMMY2.DAT")
+          && files.at("DUMMIES\\DUMMY2.DAT").size == 2048);
+    CHECK(files.count("DUMMIES\\UNIQUE.DAT")
+          && files.at("DUMMIES\\UNIQUE.DAT").size == 100);
+    CHECK(files.count("DUMMIES\\BIG.DAT")
+          && files.at("DUMMIES\\BIG.DAT").size == 5ull * 2048);
+
+    // relinks: DUP2 shares DUP1's extent, DUMMY2 shares DUMMY1's
+    CHECK(files.at("DUMMIES\\DUP2.BIN").lba
+          == files.at("DUMMIES\\DUP1.BIN").lba);
+    CHECK(files.at("DUMMIES\\DUMMY2.DAT").lba
+          == files.at("DUMMIES\\DUMMY1.DAT").lba);
+
+    const auto dup1 = readRange(
+        s, uint64_t(files.at("DUMMIES\\DUP1.BIN").lba) * 2048, 2 * 2048);
+    const auto dup2 = readRange(
+        s, uint64_t(files.at("DUMMIES\\DUP2.BIN").lba) * 2048, 2 * 2048);
+    CHECK(dup1.size() == 2 * 2048 && dup1 == dup2);
+    CHECK(dup1[0] == 3 && dup1[1] == 20 && dup1[2] == 37);   // original pattern
+    const auto d2 = readRange(
+        s, uint64_t(files.at("DUMMIES\\DUMMY2.DAT").lba) * 2048, 2048);
+    bool zeros = !d2.empty();
+    for (uint8_t b : d2) if (b) zeros = false;
+    CHECK(zeros);
+    const auto cnf = readRange(
+        s, uint64_t(files.at("SYSTEM.CNF").lba) * 2048, 96);
+    CHECK(cnf.size() == 96
+          && std::memcmp(cnf.data(), "BOOT2 = cdr", 11) == 0);
+    const auto uniq = readRange(
+        s, uint64_t(files.at("DUMMIES\\UNIQUE.DAT").lba) * 2048, 100);
+    CHECK(uniq.size() == 100 && uniq[0] == 7 && uniq[1] == 36);
+
+    // every extent inside the new volume
+    for (const auto& kv : files)
+        CHECK(kv.second.lba + uint32_t((kv.second.size + 2047) / 2048) <= 36);
+
+    // PVD: volume space + root record + path table pointers
+    {
+        const auto pvd = readRange(s, 16ull * 2048, 2048);
+        CHECK(pvd.size() == 2048);
+        CHECK(pvd[80] == 36 && pvd[81] == 0 && pvd[82] == 0 && pvd[83] == 0);
+        CHECK(pvd[84] == 0 && pvd[85] == 0 && pvd[86] == 0 && pvd[87] == 36);
+        CHECK(pvd[158] == 22 && pvd[159] == 0);          // root LBA (LE)
+        CHECK(pvd[140] == 18 && pvd[144] == 20);         // L/opt-L table LBAs
+        CHECK(pvd[148] == 0 && pvd[149] == 0 && pvd[150] == 0 && pvd[151] == 19);
+        CHECK(pvd[152] == 0 && pvd[153] == 0 && pvd[154] == 0 && pvd[155] == 21);
+
+        // path tables: root + DUMMIES entries point at the new dir LBAs
+        const auto ptl = readRange(s, 18ull * 2048, 2048);
+        CHECK(ptl.size() == 2048);
+        CHECK(ptl[0] == 1);                              // root: di = 1
+        CHECK(ptl[2] == 22);                             // root LBA (LE)
+        CHECK(ptl[10] == 7);                             // DUMMIES: di = 7
+        CHECK(ptl[12] == 23);                            // DUMMIES LBA (LE)
+        const auto ptm = readRange(s, 19ull * 2048, 2048);
+        CHECK(ptm.size() == 2048);
+        CHECK(ptm[12] == 0 && ptm[13] == 0 && ptm[14] == 0 && ptm[15] == 23);
+        const auto optl = readRange(s, 20ull * 2048, 2048);
+        CHECK(optl.size() == 2048 && optl[12] == 23);    // optional = copy
+    }
+
+    // a second shrink has nothing left to take
+    const ShrinkResult again = shrinkGame(base.string(), ir.idHex, ir.serial,
+                                          1, false);
+    CHECK(again.ok);
+    CHECK(again.newBytes == again.oldBytes);
+
+    fs::remove_all(base);
+}
+
+static void testShrinkParts() {
+    const fs::path base = fs::temp_directory_path() / "usbutils_shrink_parts";
+    fs::remove_all(base);
+    fs::create_directories(base);
+    const fs::path iso = base / "game.iso";
+    writeShrinkIso(iso, "SLUS_203.99");
+
+    // hand-split the 47-sector image into 10-sector chunk files
+    const std::string name = "Chunked Game";
+    const std::string id = gameIdHex(name), serial = "SLUS_203.99";
+    {
+        FILE* f = std::fopen(iso.string().c_str(), "rb");
+        CHECK(f != nullptr);
+        std::vector<uint8_t> buf(10ull * 2048);
+        for (uint32_t part = 0; part < 5; ++part) {
+            const size_t want = part < 4
+                ? buf.size() : size_t(47ull * 2048 - 4ull * buf.size());
+            CHECK(std::fread(buf.data(), 1, want, f) == want);
+            FILE* o = std::fopen(
+                (base / chunkFileName(id, serial, part)).string().c_str(),
+                "wb");
+            std::fwrite(buf.data(), 1, want, o);
+            std::fclose(o);
+        }
+        std::fclose(f);
+
+        UlCfg cfg;
+        cfg.dir = base.string();
+        UlCfgRecord rec;
+        rec.setName(name);
+        rec.setSerial(serial);
+        rec.parts = 5;
+        rec.media = kMediaDvd;
+        cfg.records = {rec};
+        CHECK(cfg.save());
+    }
+
+    const ShrinkResult r = shrinkGame(base.string(), id, serial, 5, false);
+    CHECK(r.ok);
+    CHECK(r.verified);
+    CHECK(r.oldBytes == 47ull * 2048);
+    CHECK(r.newBytes == 36ull * 2048);
+    CHECK(r.oldParts == 5);
+    CHECK(r.newParts == 4);
+    if (!r.ok) { fs::remove_all(base); return; }
+
+    CHECK(fs::file_size(base / chunkFileName(id, serial, 0)) == 10ull * 2048);
+    CHECK(fs::file_size(base / chunkFileName(id, serial, 3)) == 12288);
+    CHECK(!fs::exists(base / chunkFileName(id, serial, 4)));
+
+    UlCfg cfg;
+    CHECK(cfg.load(base.string()));
+    CHECK(cfg.records.size() == 1 && cfg.records[0].parts == 4);
+
+    GameStream s;
+    CHECK(s.open(base.string(), id, serial, 4));
+    CHECK(s.size() == 36ull * 2048);
+    const auto files = walkGameFiles(s);
+    CHECK(files.size() == 7);
+    const auto d1 = readRange(
+        s, uint64_t(files.at("DUMMIES\\DUP1.BIN").lba) * 2048, 2 * 2048);
+    const auto d2 = readRange(
+        s, uint64_t(files.at("DUMMIES\\DUP2.BIN").lba) * 2048, 2 * 2048);
+    CHECK(d1 == d2);
+
+    fs::remove_all(base);
+}
+
+static void testShrinkRipInterplay() {
+    const fs::path base = fs::temp_directory_path() / "usbutils_shrink_rip";
+    fs::remove_all(base);
+    fs::create_directories(base);
+    const fs::path iso = base / "game.iso";
+
+    std::vector<uint8_t> intro(3ull * 2048), logo(2ull * 2048);
+    for (size_t i = 0; i < intro.size(); ++i)
+        intro[i] = uint8_t((i * 13 + 5) & 0xFF);
+    for (size_t i = 0; i < logo.size(); ++i)
+        logo[i] = uint8_t((i * 7 + 9) & 0xFF);
+    writeRipIso(iso, "SLUS_204.77", {{"INTRO.PSS", intro},
+                                     {"LOGO.PSS", logo}});
+
+    InstallOptions opt;
+    opt.gameName = "Rip Shrink";
+    const InstallResult ir = installIso(iso.string(), base.string(), opt);
+    CHECK(ir.ok);
+    if (!ir.ok) { fs::remove_all(base); return; }
+
+    // rip with backup -> shrink must refuse (sidecar offsets would go stale)
+    {
+        auto vids = scanVideos(base.string(), ir.idHex, ir.serial, ir.parts);
+        CHECK(vids.size() == 2);
+        const RipResult rr = ripVideos(base.string(), ir.idHex, ir.serial,
+                                       ir.parts, vids, /*makeBackup*/ true);
+        CHECK(rr.ok && rr.rippedCount == 2);
+
+        ShrinkInfo info = analyzeShrink(base.string(), ir.idHex, ir.serial,
+                                        ir.parts);
+        CHECK(info.ok);
+        CHECK(info.hasRipBackups);
+
+        const ShrinkResult r = shrinkGame(base.string(), ir.idHex, ir.serial,
+                                          ir.parts, false);
+        CHECK(!r.ok);
+        CHECK(r.error.find("backup") != std::string::npos);
+    }
+
+    // restore first -> shrink works, media stay original
+    {
+        const RipResult rr = restoreVideos(base.string(), ir.idHex, ir.serial,
+                                           ir.parts);
+        CHECK(rr.ok);
+        const ShrinkResult r = shrinkGame(base.string(), ir.idHex, ir.serial,
+                                          ir.parts, false);
+        CHECK(r.ok);
+        CHECK(r.verified);
+        CHECK(r.newBytes < r.oldBytes);
+
+        auto vids = scanVideos(base.string(), ir.idHex, ir.serial, ir.parts);
+        CHECK(vids.size() == 2);
+        bool anyBlanked = false;
+        uint64_t total = 0;
+        for (const auto& v : vids) {
+            anyBlanked = anyBlanked || v.blanked;
+            total += v.size;
+        }
+        CHECK(!anyBlanked);
+        CHECK(total == 5ull * 2048);
+
+        GameStream s;
+        CHECK(s.open(base.string(), ir.idHex, ir.serial, ir.parts));
+        const auto files = walkGameFiles(s);
+        CHECK(files.count("MOVIES\\INTRO.PSS"));
+        const auto back = readRange(
+            s, uint64_t(files.at("MOVIES\\INTRO.PSS").lba) * 2048, 3 * 2048);
+        CHECK(back.size() == 3 * 2048 && back[0] == 5 && back[1] == 18);
+    }
+
+    // rip again, then discard the backups while shrinking: media stay
+    // blanked, the sidecar is gone and unrip reports no backup
+    {
+        auto vids = scanVideos(base.string(), ir.idHex, ir.serial, ir.parts);
+        const RipResult rr = ripVideos(base.string(), ir.idHex, ir.serial,
+                                       ir.parts, vids, true);
+        CHECK(rr.ok && rr.rippedCount == 2);
+        CHECK(videoBackupSize(base.string(), ir.idHex, ir.serial) > 0);
+
+        const ShrinkResult r = shrinkGame(base.string(), ir.idHex, ir.serial,
+                                          ir.parts, /*discardBackups*/ true);
+        CHECK(r.ok);
+        CHECK(r.verified);
+        CHECK(r.newBytes < r.oldBytes);
+        CHECK(videoBackupSize(base.string(), ir.idHex, ir.serial) == 0);
+
+        auto vids2 = scanVideos(base.string(), ir.idHex, ir.serial, ir.parts);
+        CHECK(vids2.size() == 2);
+        size_t blanked = 0;
+        for (const auto& v : vids2)
+            if (v.blanked) ++blanked;
+        CHECK(blanked == 2);
+
+        const RipResult un = restoreVideos(base.string(), ir.idHex, ir.serial,
+                                           ir.parts);
+        CHECK(!un.ok);
+    }
+
+    fs::remove_all(base);
+}
+
+static void testShrinkRefusals() {
+    const fs::path base = fs::temp_directory_path() / "usbutils_shrink_ref";
+    fs::remove_all(base);
+    fs::create_directories(base);
+    const std::string serial = "SLUS_205.11";
+
+    const fs::path proto = base / "proto.iso";
+    writeShrinkIso(proto, serial);
+    std::vector<uint8_t> img;
+    {
+        FILE* f = std::fopen(proto.string().c_str(), "rb");
+        CHECK(f != nullptr);
+        img.resize(static_cast<size_t>(fs::file_size(proto)));
+        CHECK(std::fread(img.data(), 1, img.size(), f) == img.size());
+        std::fclose(f);
+    }
+
+    auto install = [&](const std::vector<uint8_t>& bytes, const char* name) {
+        const fs::path p = base / (std::string(name) + ".iso");
+        FILE* f = std::fopen(p.string().c_str(), "wb");
+        std::fwrite(bytes.data(), 1, bytes.size(), f);
+        std::fclose(f);
+        InstallOptions opt;
+        opt.gameName = name;
+        return installIso(p.string(), base.string(), opt);
+    };
+
+    // find a record inside the DUMMIES directory sector by name
+    auto findRecord = [&img](const char* want) -> size_t {
+        uint8_t* dir = img.data() + 23ull * 2048;
+        size_t off = 0;
+        while (off + 1 < 2048) {
+            const uint8_t recLen = dir[off];
+            if (recLen == 0) break;
+            const uint8_t nameLen = dir[off + 32];
+            if (recLen < 34 || size_t(nameLen) + 33 > recLen) break;
+            if (nameLen >= std::strlen(want)
+                && std::strncmp(reinterpret_cast<const char*>(dir + off + 33),
+                                want, std::strlen(want)) == 0)
+                return 23ull * 2048 + off;
+            off += recLen;
+        }
+        return SIZE_MAX;
+    };
+
+    // a) supplementary volume descriptor (Joliet)
+    {
+        std::vector<uint8_t> v = img;
+        v[17 * 2048] = 2;                     // CD001 descriptor of type 2
+        const InstallResult ir = install(v, "SVD Game");
+        CHECK(ir.ok);
+        if (ir.ok) {
+            const ShrinkInfo info = analyzeShrink(base.string(), ir.idHex,
+                                                  ir.serial, ir.parts);
+            CHECK(!info.ok);
+            CHECK(info.error.find("supplementary") != std::string::npos);
+        }
+    }
+
+    // b) UDF descriptors in the set
+    {
+        std::vector<uint8_t> v = img;
+        std::memcpy(v.data() + 17 * 2048 + 1, "BEA01", 5);
+        const InstallResult ir = install(v, "UDF Game");
+        CHECK(ir.ok);
+        if (ir.ok) {
+            const ShrinkInfo info = analyzeShrink(base.string(), ir.idHex,
+                                                  ir.serial, ir.parts);
+            CHECK(!info.ok);
+            CHECK(info.error.find("UDF") != std::string::npos);
+        }
+    }
+
+    // c) Rock Ridge system-use bytes past a record's pad
+    {
+        std::vector<uint8_t> v = img;
+        const size_t rec = findRecord("BIG.DAT");
+        CHECK(rec != SIZE_MAX);
+        if (rec != SIZE_MAX) {
+            // grow the record by two bytes and fill its system-use area
+            const uint8_t nameLen = v[rec + 32];
+            size_t su = 33 + nameLen;
+            if (su % 2) ++su;
+            v[rec] = uint8_t(v[rec] + 2);     // BIG.DAT;1 is the last record
+            v[rec + su] = 'R';
+            v[rec + su + 1] = 'R';
+        }
+        const InstallResult ir = install(v, "RR Game");
+        CHECK(ir.ok);
+        if (ir.ok) {
+            const ShrinkInfo info = analyzeShrink(base.string(), ir.idHex,
+                                                  ir.serial, ir.parts);
+            CHECK(!info.ok);
+            CHECK(info.error.find("Rock Ridge") != std::string::npos);
+        }
+    }
+
+    // d) interleaved record (file unit size != 0)
+    {
+        std::vector<uint8_t> v = img;
+        const size_t rec = findRecord("DUP1.BIN");
+        CHECK(rec != SIZE_MAX);
+        if (rec != SIZE_MAX) v[rec + 26] = 2;
+        const InstallResult ir = install(v, "ILV Game");
+        CHECK(ir.ok);
+        if (ir.ok) {
+            const ShrinkInfo info = analyzeShrink(base.string(), ir.idHex,
+                                                  ir.serial, ir.parts);
+            CHECK(!info.ok);
+            CHECK(info.error.find("interleaved") != std::string::npos);
+        }
+    }
+
+    fs::remove_all(base);
+}
+
 int main() {
     std::printf("== USBUtils core tests ==\n");
     testCrcId();
@@ -1965,6 +2546,10 @@ int main() {
     testIsoEdit();
     testIsoEditMultiExtent();
     testSupportFiles();
+    testShrink();
+    testShrinkParts();
+    testShrinkRipInterplay();
+    testShrinkRefusals();
     std::printf(g_failed ? "\n%d FAILURE(S)\n" : "\nALL TESTS PASSED\n", g_failed);
     return g_failed ? 1 : 0;
 }

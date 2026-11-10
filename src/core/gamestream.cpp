@@ -231,4 +231,56 @@ bool GameStream::truncate(uint64_t newSize) {
     return true;
 }
 
+uint32_t GameStream::chunkCountFor(uint64_t bytes) const {
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < parts_; ++i)
+        if (starts_[i] < bytes) ++count;
+    return count == 0 ? 1 : count;   // even 0 bytes formally "live" in chunk 0
+}
+
+bool GameStream::shrinkTo(uint64_t newSize, uint32_t* removed) {
+    if (removed) *removed = 0;
+    if (parts_ == 0 || newSize > total_) return false;
+    if (newSize == total_) return true;
+
+    const uint32_t keep = chunkCountFor(newSize);
+    if (keep == parts_) return truncate(newSize);   // cut stays in the last file
+
+    const uint32_t last = keep - 1;
+    const uint64_t want = newSize - starts_[last];  // bytes the new last chunk keeps
+    if (want == 0) return false;                    // chunkCountFor guarantees > 0
+
+    closeAll_();                     // stdio buffers must not outlive the cut
+
+    const std::string lastPath = chunkPath_(last);
+    FILE* f = std::fopen(lastPath.c_str(), "r+b");
+    if (!f) return false;
+    bool ok = usbutils::seek64(f, static_cast<int64_t>(want))
+           && std::fflush(f) == 0;
+#if defined(_MSC_VER)
+    ok = ok && _chsize_s(_fileno(f), static_cast<long>(want)) == 0;
+#elif defined(_WIN32)
+    ok = ok && _chsize(_fileno(f), static_cast<long>(want)) == 0;
+#else
+    ok = ok && ::truncate(lastPath.c_str(), static_cast<off_t>(want)) == 0;
+#endif
+    std::fclose(f);
+    if (!ok) return false;
+
+    uint32_t deleted = 0;
+    for (uint32_t i = keep; i < parts_; ++i)
+        if (std::remove(chunkPath_(i).c_str()) == 0) ++deleted;
+        // A surplus file that cannot be removed (in use on Windows, foreign
+        // permissions) is not fatal: it stays behind as an obsolete "ul.*"
+        // file the drive-space cleanup can delete later.
+
+    starts_.resize(keep);
+    parts_ = keep;
+    total_ = newSize;
+    files_.assign(keep, nullptr);
+    mode_.assign(keep, kClosed);
+    if (removed) *removed = deleted;
+    return true;
+}
+
 } // namespace usbutils
