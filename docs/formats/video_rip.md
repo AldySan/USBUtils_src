@@ -58,6 +58,10 @@ units (1 bit each, 1 = literal byte, 0 = 3-byte match token: uint16
 back-offset 1..65535 within the same block + uint8 length−4). The
 decoder rejects any offset reaching before the block start, so a
 corrupt sidecar fails loudly instead of writing garbage into the game.
+Known limitation: the payload carries no checksum, so structural
+corruption is caught but a flipped bit that stays structurally valid
+would restore wrong bytes silently — a USRRIP03 with a per-entry CRC32
+is the planned fix (see anti-slop/audit-004, accepted risks).
 
 Ripping more media later appends entries and re-encodes the whole
 payload — previously backed-up bytes are re-read from the old sidecar

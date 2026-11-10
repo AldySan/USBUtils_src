@@ -40,17 +40,21 @@ shrunk game reports nothing left to take.
 4. **Rewrite** — move file extents down inside the chunk stream, then
    write the patched path tables, directory records (including `.` /
    `..` entries) and PVD fields (volume space size, root record LBA,
-   path table LBAs), zero the pad tails, cut the stream and delete
-   surplus chunk files (`GameStream::shrinkTo`), and update the record's
-   `parts` field in ul.cfg.
+   path table LBAs), zero the pad tails, cut the stream
+   (`GameStream::shrinkTrim`), make the ul.cfg `parts` field durable,
+   and only then delete the surplus chunk files
+   (`GameStream::deleteSurplus`).
 5. **Verify** — walk the finished image as a fresh reader would, re-hash
    every file and compare against the original hashes; check the file
    count, the directory count and the PVD volume size.
 
-Partial-failure behavior: if the stream cannot be cut or ul.cfg cannot
-be rewritten, the game keeps booting (the volume descriptor is already
-consistent) and the error says what to fix. Cancellation is honored
-during analysis only — a half-moved image is not a valid one.
+Partial-failure behavior: the ul.cfg update happens BEFORE any surplus
+chunk file is deleted, so if the stream cannot be cut or ul.cfg cannot
+be rewritten, every chunk file is still on disk and the game keeps
+booting (the loader merely opens parts it never reads) — the error says
+which parts field to fix. A rip backup that `--discard-backups` cannot
+delete stops the shrink before anything is rewritten. Cancellation is
+honored during analysis only — a half-moved image is not a valid one.
 
 ## What it refuses
 
