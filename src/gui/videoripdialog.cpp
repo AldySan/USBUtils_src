@@ -52,10 +52,10 @@ void VideoRipDialog::buildUi() {
 
     auto* intro = new QLabel(
         media_ == Media::Audio
-            ? tr("Music, voice and sound effects can take up a lot of room "
-                 "on the drive. Turning an audio file OFF keeps its space "
-                 "(the game plays without it) and keeps a backup so you can "
-                 "turn it back ON later.")
+            ? tr("Music, voice and sound effect files live inside the game's "
+                 "image. Turning an audio file OFF blanks it in place (its "
+                 "space stays used, the game plays without it) and keeps a "
+                 "backup so you can turn it back ON later.")
             : tr("Videos stored on the disc make some games stutter when played from a "
                  "USB drive. Turning a video OFF keeps its space on the drive (the game "
                  "just skips it) and keeps a backup so you can turn it back ON later."),

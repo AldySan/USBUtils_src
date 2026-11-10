@@ -10,7 +10,7 @@
  *   usbutils check                      -d <dir>
  *   usbutils recover                    -d <dir> [--apply]
  *   usbutils videos <index>             -d <dir>
- *   usbutils audio <index>             -d <dir>
+ *   usbutils audio <index>              -d <dir>
  *   usbutils rip <index>                -d <dir> [--audio] [--all | --only p1,p2] [--no-backup]
  *   usbutils unrip <index>              -d <dir> [--audio]
  *   usbutils ps2load <index>            -d <dir>
@@ -75,7 +75,7 @@ static void usage() {
         "  usbutils check                -d <dir>\n"
         "  usbutils recover              -d <dir> [--apply]\n"
         "  usbutils videos <index>       -d <dir>\n"
-        "  usbutils audio <index>       -d <dir>   (list in-game audio files)\n"
+        "  usbutils audio <index>        -d <dir>   (list in-game audio files)\n"
         "  usbutils rip <index>          -d <dir> [--audio] [--all | --only path,...] [--no-backup]\n"
         "  usbutils unrip <index>        -d <dir> [--audio]   (restore ripped media)\n"
         "  usbutils ps2load <index>       -d <dir>   (show injection status)\n"

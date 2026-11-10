@@ -73,6 +73,13 @@ blank/restore mechanism, applied to standalone audio files:
   keep independent backups and can be restored in either order.
 * Video detection (`.PSS`) and audio detection never overlap, so
   `unrip` and `unrip --audio` each restore exactly their own media.
+* Like the video rip it is size-preserving: files are blanked with
+  zeros in place, so the ISO byte count, every LBA and the drive usage
+  stay exactly the same (the USBExtreme loader expects a byte-exact
+  image). What you gain is a silent game, not free space.
+* Drive-wide features know about the sidecar: "Clean up drive space"
+  counts it as a game file (never deletes it), and copying or moving a
+  game carries it along.
 
 ### CLI
 

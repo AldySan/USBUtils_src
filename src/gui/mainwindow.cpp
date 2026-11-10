@@ -237,7 +237,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     btnVideos->setToolTip(tr("Turn a game's videos off so it runs smoother "
                              "from USB; reversible."));
     btnAudio->setToolTip(tr("Turn a game's music, voice and sound effects "
-                            "off to save space; reversible."));
+                            "off (the game plays without them); "
+                            "reversible."));
     btnDnas->setToolTip(tr("Fix the DNAS error that stops some games from "
                            "going online."));
     btnPs2->setToolTip(tr("Swap a game's boot program for the PS2Load "
