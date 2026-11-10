@@ -125,6 +125,8 @@ if(USBUTILS_BUILD_GUI)
         src/gui/mainwindow.h
         src/gui/videoripdialog.cpp
         src/gui/videoripdialog.h
+        src/gui/shrinkdialog.cpp
+        src/gui/shrinkdialog.h
         src/gui/dnasdialog.cpp
         src/gui/dnasdialog.h
         src/gui/ps2loaddialog.cpp

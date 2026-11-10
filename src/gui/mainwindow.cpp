@@ -2,6 +2,7 @@
 #include "mainwindow.h"
 
 #include "videoripdialog.h"
+#include "shrinkdialog.h"
 #include "dnasdialog.h"
 #include "ps2loaddialog.h"
 #include "finddialog.h"
@@ -139,6 +140,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         QAction* aFiles  = m.addAction(tr("Look inside this game's files..."));
         QAction* aRename = m.addAction(tr("Rename"));
         QAction* aVideos = m.addAction(tr("Videos (turn off / restore)..."));
+        QAction* aShrink = m.addAction(tr("Shrink (make smaller)..."));
         QAction* aDnas   = m.addAction(tr("DNAS patch..."));
         QAction* aPs2    = m.addAction(tr("PS2Load options..."));
         m.addSeparator();
@@ -151,6 +153,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         else if (picked == aFiles)  gameFilesSelected();
         else if (picked == aRename) renameSelected();
         else if (picked == aVideos) videoRipSelected();
+        else if (picked == aShrink) shrinkSelected();
         else if (picked == aDnas)   dnasPatchSelected();
         else if (picked == aPs2)    ps2LoadSelected();
         else if (picked == aCopy)   copySelected();
@@ -357,6 +360,8 @@ void MainWindow::buildMenus() {
     connect(aVideos, &QAction::triggered, this, &MainWindow::videoRipSelected);
     QAction* aAudio = mAdv->addAction(tr("&Audio (turn off / restore)..."));
     connect(aAudio, &QAction::triggered, this, &MainWindow::audioRipSelected);
+    QAction* aShrink = mAdv->addAction(tr("&Shrink game (make smaller)..."));
+    connect(aShrink, &QAction::triggered, this, &MainWindow::shrinkSelected);
     QAction* aDnas = mAdv->addAction(tr("&DNAS patch..."));
     connect(aDnas, &QAction::triggered, this, &MainWindow::dnasPatchSelected);
     QAction* aPs2 = mAdv->addAction(tr("&PS2Load options..."));
@@ -1419,6 +1424,21 @@ void MainWindow::openMediaRip(bool audio) {
 void MainWindow::videoRipSelected() { openMediaRip(false); }
 
 void MainWindow::audioRipSelected() { openMediaRip(true); }
+
+void MainWindow::shrinkSelected() {
+    const int row = selectedRow();
+    if (row < 0 || !cfg_ || row >= (int)cfg_->records.size()) {
+        QMessageBox::warning(this, tr("USBUtils"), tr("Select a game."));
+        return;
+    }
+    const UlCfgRecord& r = cfg_->records[row];
+    const std::string id = gameIdHex(r.nameStr());
+    ShrinkDialog dlg(dir_, QString::fromStdString(r.nameStr()),
+                     QString::fromStdString(id),
+                     QString::fromStdString(r.serialStr()), r.parts, this);
+    dlg.exec();
+    refreshGames();      // size and parts may have changed
+}
 
 void MainWindow::ps2LoadSelected() {
     const int row = selectedRow();
