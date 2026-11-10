@@ -175,8 +175,9 @@ bool scanDescriptors(GameStream& s, uint32_t volumeSectors, uint32_t& vdEnd,
             const uint8_t type = sec[0];
             if (type == 255) { vdEnd = lba + 1; return true; }
             if (type != 1) {
-                err = "image has a supplementary volume descriptor "
-                      "(Joliet) — shrinking it is not supported";
+                err = "image has a non-primary volume descriptor "
+                      "(supplementary/Joliet or a boot record) — "
+                      "shrinking it is not supported";
                 return false;
             }
             continue;                               // another PVD — keep going
@@ -828,10 +829,13 @@ bool applyModel(GameStream& s, Model& m, const std::string& dir,
         }
     }
 
-    // ---- 5. cut the stream + chunk files ----------------------------------
+    // ---- 5. cut the stream, update ul.cfg, delete surplus chunks --------
+    // ul.cfg is made durable BEFORE any chunk file goes away. If the
+    // update fails, every chunk file is still on disk and the loader
+    // merely opens parts it never reads — the game keeps booting and the
+    // parts field can be fixed by hand.
     const uint64_t finalBytes = uint64_t(m.finalSectors) * kSector;
-    uint32_t removedChunks = 0;
-    if (!s.shrinkTo(finalBytes, &removedChunks)) {
+    if (!s.shrinkTrim(finalBytes)) {
         err = "the image was rewritten but could not be cut — "
               "the game still works, only the size stays";
         res.oldBytes = m.streamSize;
@@ -846,7 +850,9 @@ bool applyModel(GameStream& s, Model& m, const std::string& dir,
         const size_t idx = cfg.findByIdSerial(idHex, serial);
         if (idx == SIZE_MAX) {
             err = "the image was shrunk but the game's ul.cfg record "
-                  "disappeared — fix its parts field";
+                  "disappeared — all chunk files are still on disk; "
+                  "re-create the record with parts "
+                  + std::to_string(newParts);
             res.oldBytes = m.streamSize;
             res.newBytes = finalBytes;
             res.oldParts = oldParts;
@@ -856,7 +862,9 @@ bool applyModel(GameStream& s, Model& m, const std::string& dir,
         cfg.records[idx].parts = newParts;
         if (!cfg.save()) {
             err = "the image was shrunk but ul.cfg could not be "
-                  "updated — fix the parts field of the game record";
+                  "updated — all chunk files are still on disk, so the "
+                  "game keeps booting; set its parts field to "
+                  + std::to_string(newParts);
             res.oldBytes = m.streamSize;
             res.newBytes = finalBytes;
             res.oldParts = oldParts;
@@ -864,13 +872,19 @@ bool applyModel(GameStream& s, Model& m, const std::string& dir,
             return false;
         }
     } else {
-        err = "the image was shrunk but ul.cfg could not be re-read";
+        err = "the image was shrunk but ul.cfg could not be re-read — "
+              "all chunk files are still on disk, so the game keeps "
+              "booting; set its parts field to "
+              + std::to_string(newParts);
         res.oldBytes = m.streamSize;
         res.newBytes = finalBytes;
         res.oldParts = oldParts;
         res.newParts = newParts;
         return false;
     }
+
+    // ul.cfg is durable — the surplus chunk files can go now
+    s.deleteSurplus(newParts, oldParts);
 
     // ---- 6. verify: re-walk and re-hash the finished image -----------------
     struct Walked {
@@ -1059,6 +1073,15 @@ ShrinkResult shrinkGame(const std::string& dir, const std::string& idHex,
         }
         for (const std::string& name : backupFileNames(idHex, serial))
             std::remove(joinPath(dir, name).c_str());
+        // A backup that survived the delete (file in use on Windows,
+        // foreign permissions) must stop the shrink here: shrinking
+        // anyway would leave a sidecar whose stored offsets are stale,
+        // and restoring through it later would corrupt the shared extent.
+        if (gameHasRipBackups(dir, idHex, serial)) {
+            res.error = "the rip backup could not be deleted — remove it "
+                        "manually and shrink again";
+            return res;
+        }
     }
 
     if (!applyModel(stream, m, dir, idHex, serial, parts, res, err,
