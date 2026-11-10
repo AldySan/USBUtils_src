@@ -54,7 +54,7 @@ Ps2LoadDialog::Ps2LoadDialog(const QString& dir, const QString& gameName,
                              uint32_t parts, QWidget* parent)
     : QDialog(parent), dir_(dir), idHex_(idHex), serial_(serial),
       gameName_(gameName), parts_(parts) {
-    setWindowTitle(tr("PS2Load — %1").arg(gameName_));
+    setWindowTitle(tr("PS2Load: %1").arg(gameName_));
     setModal(true);
     setMinimumWidth(480);
 
@@ -63,7 +63,7 @@ Ps2LoadDialog::Ps2LoadDialog(const QString& dir, const QString& gameName,
     auto* intro = new QLabel(tr(
         "Some games only start from USB when their boot program is swapped "
         "for PS2Load. Injecting it keeps every game file at its original "
-        "position on the drive — the original boot settings are backed up "
+        "position on the drive. The original boot settings are backed up "
         "inside the game, so the change can be undone here at any time."),
         this);
     intro->setWordWrap(true);
@@ -143,7 +143,7 @@ void Ps2LoadDialog::refresh() {
     case Ps2LoadState::InjectedManually:
         status_->setText(tr(
             "A PS2Load was added to this game manually (with another "
-            "tool such as UltraISO). This tool will not remove it — use "
+            "tool such as UltraISO). This tool will not remove it. Use "
             "the tool that created it."));
         break;
     }

@@ -268,7 +268,7 @@ std::vector<OpticalDrive> listOpticalDrives() {
         od.devicePath = std::string("\\\\.\\") + root.substr(0, 2);
         od.display = "CD/DVD drive " + root.substr(0, 2);
         if (probeOpticalDrive(od.devicePath, &od) && !od.volumeId.empty())
-            od.display += " — " + od.volumeId;
+            od.display += " (" + od.volumeId + ")";
         out.push_back(std::move(od));
     }
 #else
@@ -292,7 +292,7 @@ std::vector<OpticalDrive> listOpticalDrives() {
         od.devicePath = p;
         od.display = p;
         if (probeOpticalDrive(p, &od) && !od.volumeId.empty())
-            od.display += " — " + od.volumeId;
+            od.display += " (" + od.volumeId + ")";
         out.push_back(std::move(od));
     }
 #endif

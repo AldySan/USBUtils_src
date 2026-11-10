@@ -319,7 +319,7 @@ Ps2LoadResult injectPs2Load(const std::string& dir, const std::string& idHex,
     }
     const std::string bootName = parseBootElf(cnf);
     if (bootName.empty()) {
-        res.error = "no BOOT2 entry in SYSTEM.CNF — not a PS2 disc";
+        res.error = "no BOOT2 entry in SYSTEM.CNF (not a PS2 disc)";
         return res;                                     // @0x9A59C
     }
     const std::string ps2l = buildPs2lName(bootName);

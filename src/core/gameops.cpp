@@ -255,7 +255,7 @@ InjectResult injectGameFile(const std::string& dir, const std::string& idHex,
     if (target->size != localSize) {
         char buf[200];
         std::snprintf(buf, sizeof(buf),
-                      "size mismatch — in-game file is %llu bytes, replacement "
+                      "size mismatch: in-game file is %llu bytes, replacement "
                       "is %llu bytes; only exact-size replacement is possible "
                       "(LBAs must stay valid)",
                       static_cast<unsigned long long>(target->size),
