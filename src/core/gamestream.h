@@ -63,6 +63,18 @@ public:
     /// across a chunk boundary). Returns false on error.
     bool truncate(uint64_t newSize);
 
+    /// Number of chunk files the first `bytes` of the stream live in,
+    /// derived from the ACTUAL on-disk chunk sizes (1 for a size inside
+    /// the first chunk). Never exceeds parts().
+    uint32_t chunkCountFor(uint64_t bytes) const;
+
+    /// Shrink the stream to `newSize` bytes, deleting whole surplus chunk
+    /// files when the new size no longer needs them (unlike truncate(),
+    /// which refuses to cut past the final chunk). `removed` (optional)
+    /// receives how many chunk FILES were deleted. The ul.cfg record is
+    /// NOT touched — callers must keep its parts field in sync.
+    bool shrinkTo(uint64_t newSize, uint32_t* removed = nullptr);
+
     /// Total size of all chunk files of a game (sum of file sizes).
     static uint64_t totalSize(const std::string& dir, const std::string& idHex,
                               const std::string& serial, uint32_t parts);

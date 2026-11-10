@@ -29,6 +29,7 @@ add_library(usbutils_core STATIC
     src/core/usbdevice.cpp
     src/core/videorip.cpp
     src/core/lzpack.cpp
+    src/core/isoshrink.cpp
     src/core/ps2load.cpp
     src/core/gameops.cpp
     src/core/update.cpp
@@ -124,6 +125,8 @@ if(USBUTILS_BUILD_GUI)
         src/gui/mainwindow.h
         src/gui/videoripdialog.cpp
         src/gui/videoripdialog.h
+        src/gui/shrinkdialog.cpp
+        src/gui/shrinkdialog.h
         src/gui/dnasdialog.cpp
         src/gui/dnasdialog.h
         src/gui/ps2loaddialog.cpp

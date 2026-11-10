@@ -79,6 +79,11 @@ Help menu, the CLI with `usbutils check-update`.
 - Turn in-game audio off and back on: music, voice, and sound effects
   (`.VAG`, `.ADS`, `.SS2`, and friends), with the same reversible backup —
   audio backups compress dramatically (raw ADPCM with lots of silence).
+- Shrink a game: relink duplicate files, fold all-zero files (dummy
+  padding, ripped media) into one shared extent and cut the unused
+  padding — the 2000s "rebuild the ISO" trick, done in place with a
+  byte-for-byte verification at the end. Dry-run report first; nothing
+  is removed from the game's file list.
 - Find a file inside every game at once, with wildcards and a size filter
 - Browse one game's files, extract or replace them
 - Open any plain ISO, explore it, add / delete / rename files, edit the
@@ -165,6 +170,8 @@ usbutils unrip 0 -d /media/usb0               # turn videos back on
 usbutils audio 0 -d /media/usb0               # list in-game audio files
 usbutils rip 0 -d /media/usb0 --audio         # turn audio off (reversible)
 usbutils unrip 0 -d /media/usb0 --audio       # turn audio back on
+usbutils shrink 0 -d /media/usb0               # report what a rebuild saves
+usbutils shrink 0 -d /media/usb0 --apply       # rewrite the game in place
 usbutils ps2load 0 -d /media/usb0             # PS2Load status
 usbutils ps2load inject 0 -d /media/usb0 --elf data/PS2LOAD.ELF
 usbutils ps2load remove 0 -d /media/usb0      # undo the injection

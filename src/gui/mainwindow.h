@@ -70,6 +70,7 @@ private slots:
     void driveReport();
     void videoRipSelected();
     void audioRipSelected();
+    void shrinkSelected();
     void dnasPatchSelected();
     void ps2LoadSelected();
     void selectAllGames();          ///< original "Select" (mark all games)
