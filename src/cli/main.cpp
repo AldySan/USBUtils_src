@@ -549,6 +549,11 @@ static int cmdRip(const Args& a) {
                 a.audio ? "audio" : "video", humanSize(r.blankedBytes).c_str());
     if (!a.noBackup) {
         std::printf(", backup %s", humanSize(r.backupBytes).c_str());
+        const uint64_t onDisk = a.audio
+            ? audioBackupSize(a.dir, id, cfg.records[index].serialStr())
+            : videoBackupSize(a.dir, id, cfg.records[index].serialStr());
+        if (onDisk && onDisk < r.backupBytes)
+            std::printf(" (compressed to %s on disk)", humanSize(onDisk).c_str());
         std::printf("\nundo with: usbutils unrip %d -d %s%s", a.index,
                     a.dir.c_str(), a.audio ? " --audio" : "");
     }

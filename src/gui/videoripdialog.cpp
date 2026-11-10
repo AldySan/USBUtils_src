@@ -270,8 +270,8 @@ void VideoRipDialog::ripSelected() {
     for (const VideoEntry& v : selection) bytes += v.size;
     if (QMessageBox::question(this, tr("Turn %1 off").arg(word_),
             tr("Turn OFF %1 %2 (%3)?\n\n"
-               "A backup is written next to the game (same size as the "
-               "media), so you can undo this later.")
+               "A compressed backup is written next to the game, "
+               "so you can undo this later.")
                 .arg(selection.size()).arg(word_).arg(humanSize(bytes)))
             != QMessageBox::Yes)
         return;
