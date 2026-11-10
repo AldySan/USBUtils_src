@@ -1,0 +1,37 @@
+name: Feature request
+description: Suggest an idea for USBUtils.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea. A request that explains the problem you are
+        trying to solve is far more useful than one that jumps straight to
+        a solution, so tell us the story first.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: What are you trying to do, and what makes it awkward or impossible today?
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: What would a good solution look like?
+      description: Describe the behavior you would like. A rough sketch is plenty.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What have you tried or considered instead?
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else?
+      description: Links, screenshots from other tools, notes on how the original USBUtil handled it.
+    validations:
+      required: false

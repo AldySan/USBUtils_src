@@ -1,0 +1,66 @@
+name: Bug report
+description: Something is broken, behaves oddly, or crashed.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a problem. The more you can
+        tell us, the faster we can fix it. If the app crashed and wrote a
+        `.dmp` file, please attach it (drag and drop into this issue).
+  - type: dropdown
+    id: app
+    attributes:
+      label: Which app were you using?
+      options:
+        - GUI (usbutils-gui)
+        - CLI (usbutils)
+        - Both
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Run `usbutils --version`, or open Help > About USBUtils in the GUI.
+      placeholder: "0.0.10"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      description: For example Windows 11, Ubuntu 24.04, macOS 15.
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A short description of the problem. Include the exact error text if there is any.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The smallest set of steps that triggers the problem.
+      placeholder: |
+        1. Open ...
+        2. Click ...
+        3. See error ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen instead?
+    validations:
+      required: false
+  - type: textarea
+    id: more
+    attributes:
+      label: Anything else?
+      description: Screenshots, console output, the USB drive's format (FAT32?), anything that might help.
+    validations:
+      required: false
