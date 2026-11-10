@@ -2,6 +2,7 @@
 #include "videorip.h"
 #include "gamestream.h"
 #include "iso9660.h"
+#include "lzpack.h"
 #include "port.h"
 
 #include <cstdio>
@@ -12,7 +13,8 @@ namespace usbutils {
 
 namespace {
 
-constexpr char kSidecarMagic[8] = {'U','S','R','R','I','P','0','1'};
+constexpr char kMagicV1[8] = {'U','S','R','R','I','P','0','1'};
+constexpr char kMagicV2[8] = {'U','S','R','R','I','P','0','2'};
 
 struct SidecarEntry {
     uint64_t offset;
@@ -22,6 +24,9 @@ struct SidecarEntry {
 struct Sidecar {
     std::vector<SidecarEntry> entries;
     std::string path;          ///< "" when no sidecar exists
+    uint64_t payloadRaw = 0;   ///< uncompressed payload bytes (sum of sizes)
+    uint64_t dataStart = 0;    ///< file offset where the payload begins
+    bool v2 = false;           ///< USRRIP02 (block-compressed payload)
 };
 
 std::string toLower(const std::string& s) {
@@ -89,27 +94,55 @@ uint64_t fileSizeBytes(const std::string& p) {
 }
 
 #pragma pack(push, 1)
-struct SidecarHeader {
+struct SidecarHeaderV1 {
     char     magic[8];
     uint32_t count;
+};
+struct SidecarHeaderV2 {
+    char     magic[8];
+    uint32_t count;
+    uint64_t payloadRaw;
 };
 struct SidecarEntryRec {
     uint64_t offset;
     uint64_t size;
 };
 #pragma pack(pop)
-static_assert(sizeof(SidecarHeader)   == 12, "sidecar header layout");
+static_assert(sizeof(SidecarHeaderV1) == 12, "sidecar v1 header layout");
+static_assert(sizeof(SidecarHeaderV2) == 20, "sidecar v2 header layout");
 static_assert(sizeof(SidecarEntryRec) == 16, "sidecar entry layout");
 
 bool loadSidecar(const std::string& path, Sidecar& out) {
     out.entries.clear();
     out.path.clear();
+    out.payloadRaw = 0;
+    out.dataStart = 0;
+    out.v2 = false;
     FILE* f = std::fopen(path.c_str(), "rb");
     if (!f) return true;                       // no sidecar — fine
 
-    SidecarHeader hdr{};
-    const bool ok = std::fread(&hdr, sizeof(hdr), 1, f) == 1
-        && std::memcmp(hdr.magic, kSidecarMagic, sizeof(kSidecarMagic)) == 0;
+    SidecarHeaderV1 hdr{};
+    bool ok = std::fread(&hdr, sizeof(hdr), 1, f) == 1;
+    uint32_t count = 0;
+    uint64_t payloadRaw = 0;
+    size_t hdrSize = 0;
+    if (ok && std::memcmp(hdr.magic, kMagicV1, sizeof(kMagicV1)) == 0) {
+        count = hdr.count;
+        hdrSize = sizeof(SidecarHeaderV1);
+    } else if (ok && std::memcmp(hdr.magic, kMagicV2, sizeof(kMagicV2)) == 0) {
+        SidecarHeaderV2 h2{};
+        ok = usbutils::seek64(f, 0, SEEK_SET)
+             && std::fread(&h2, sizeof(h2), 1, f) == 1;
+        if (ok) {
+            count = h2.count;
+            payloadRaw = h2.payloadRaw;
+            hdrSize = sizeof(SidecarHeaderV2);
+            out.v2 = true;
+        }
+    } else {
+        ok = false;
+    }
+
     if (ok) {
         // Clamp the entry count by what the file can actually hold: the
         // header count is untrusted (a corrupt/hostile .rip would otherwise
@@ -118,33 +151,125 @@ bool loadSidecar(const std::string& path, Sidecar& out) {
         uint64_t maxEntries = 0;
         if (usbutils::seek64(f, 0, SEEK_END)) {
             const int64_t fsz = usbutils::tell64(f);
-            if (fsz >= static_cast<int64_t>(sizeof(SidecarHeader)))
-                maxEntries = static_cast<uint64_t>(fsz - sizeof(SidecarHeader))
+            if (fsz >= static_cast<int64_t>(hdrSize))
+                maxEntries = static_cast<uint64_t>(fsz - hdrSize)
                              / sizeof(SidecarEntryRec);
-            if (usbutils::seek64(f, static_cast<int64_t>(sizeof(SidecarHeader)))) {
-                // no-op reposition; keeps the read loop below meaningful
+            if (!usbutils::seek64(f, static_cast<int64_t>(hdrSize)))
+                ok = false;
+        } else {
+            ok = false;
+        }
+        if (ok) {
+            if (count > maxEntries) count = static_cast<uint32_t>(maxEntries);
+            out.entries.resize(count);
+            for (uint32_t i = 0; i < count; ++i) {
+                SidecarEntryRec rec{};
+                if (std::fread(&rec, sizeof(rec), 1, f) != 1) {
+                    out.entries.resize(i);
+                    break;
+                }
+                out.entries[i] = {rec.offset, rec.size};
+            }
+            uint64_t sum = 0;
+            for (const auto& e : out.entries) sum += e.size;
+            if (out.v2 && payloadRaw != sum)
+                ok = false;      // claimed payload size disagrees — corrupt
+            if (ok) {
+                if (!out.v2) payloadRaw = sum;
+                out.payloadRaw = payloadRaw;
+                out.dataStart = hdrSize + out.entries.size()
+                                * sizeof(SidecarEntryRec);
+                out.path = path;
             }
         }
-        if (hdr.count > maxEntries) hdr.count = static_cast<uint32_t>(maxEntries);
-        out.entries.resize(hdr.count);
-        for (uint32_t i = 0; i < hdr.count; ++i) {
-            SidecarEntryRec rec{};
-            if (std::fread(&rec, sizeof(rec), 1, f) != 1) {
-                out.entries.resize(i);
-                break;
-            }
-            out.entries[i] = {rec.offset, rec.size};
-        }
-        out.path = path;
     }
     std::fclose(f);
     return ok;                                 // false only on corrupt sidecar
 }
 
-/// Write the new sidecar: old entries + `newEntries` in the index, the
-/// old data section copied VERBATIM (the game stream already holds zeros
-/// for those ranges — re-reading it would destroy the backup!), then the
-/// new ranges streamed out of the still-original game chunks.
+/// Sequential reader over a sidecar's payload: verbatim bytes for USRRIP01,
+/// block-decoded (stored or LZSS) for USRRIP02. Shared by restore (writing
+/// the original bytes back into the game stream) and by saveSidecar
+/// (re-reading an existing backup when more media are ripped later).
+class PayloadReader {
+public:
+    explicit PayloadReader(const Sidecar& sc)
+        : rawLeft_(sc.payloadRaw), v2_(sc.v2) {
+        if (sc.path.empty()) return;           // no old sidecar — nothing to read
+        f_ = std::fopen(sc.path.c_str(), "rb");
+        if (f_ && !usbutils::seek64(f_, static_cast<int64_t>(sc.dataStart))) {
+            std::fclose(f_);
+            f_ = nullptr;
+        }
+    }
+    ~PayloadReader() { if (f_) std::fclose(f_); }
+    PayloadReader(const PayloadReader&) = delete;
+    PayloadReader& operator=(const PayloadReader&) = delete;
+
+    bool valid() const { return f_ != nullptr; }
+
+    /// Fill exactly `n` raw payload bytes; false on truncation/corruption.
+    bool read(uint8_t* dst, size_t n) {
+        if (!f_ || failed_ || n > rawLeft_) { if (n) failed_ = true; return false; }
+        size_t done = 0;
+        while (done < n) {
+            if (!v2_) {
+                const size_t got = std::fread(dst + done, 1, n - done, f_);
+                if (got == 0) { failed_ = true; return false; }
+                done += got;
+            } else {
+                if (blkPos_ == blk_.size() && !nextBlock()) return false;
+                const size_t take = std::min(n - done, blk_.size() - blkPos_);
+                std::memcpy(dst + done, blk_.data() + blkPos_, take);
+                blkPos_ += take;
+                done += take;
+            }
+        }
+        rawLeft_ -= n;
+        return true;
+    }
+
+private:
+    bool nextBlock() {
+        uint32_t bh = 0;
+        if (std::fread(&bh, sizeof(bh), 1, f_) != 1)
+            { failed_ = true; return false; }
+        const uint32_t rawLen = bh & 0x7FFFFFFFu;
+        if (rawLen == 0 || rawLen > kLzBlockSize || rawLen > rawLeft_)
+            { failed_ = true; return false; }
+        blk_.resize(rawLen);
+        blkPos_ = 0;
+        if (bh & 0x80000000u) {
+            uint32_t compLen = 0;
+            if (std::fread(&compLen, sizeof(compLen), 1, f_) != 1 ||
+                compLen > rawLen + rawLen / 8 + 64)
+                { failed_ = true; return false; }
+            comp_.resize(compLen);
+            if (std::fread(comp_.data(), 1, compLen, f_) != compLen ||
+                !lzDecodeBlock(comp_.data(), compLen, blk_.data(), rawLen))
+                { failed_ = true; return false; }
+        } else {
+            if (std::fread(blk_.data(), 1, rawLen, f_) != rawLen)
+                { failed_ = true; return false; }
+        }
+        return true;
+    }
+
+    FILE* f_ = nullptr;
+    bool failed_ = false;
+    bool v2_ = false;
+    uint64_t rawLeft_ = 0;
+    std::vector<uint8_t> blk_, comp_;
+    size_t blkPos_ = 0;
+};
+
+/// Write the new sidecar (USRRIP02, block-compressed): old entries +
+/// `newEntries` in the index, then the payload — the old sidecar's data
+/// re-read through PayloadReader (the game stream already holds zeros for
+/// those ranges — re-reading it would destroy the backup!) and the new
+/// ranges streamed out of the still-original game chunks — packed into
+/// 1 MiB blocks that fall back to verbatim storage when LZSS cannot
+/// shrink them (MPEG-2 video barely compresses).
 bool saveSidecar(const std::string& path, const Sidecar& oldSc,
                  const std::vector<SidecarEntry>& newEntries,
                  GameStream& stream) {
@@ -152,9 +277,14 @@ bool saveSidecar(const std::string& path, const Sidecar& oldSc,
     FILE* f = std::fopen(tmp.c_str(), "wb");
     if (!f) return false;
 
-    SidecarHeader hdr{};
-    std::memcpy(hdr.magic, kSidecarMagic, sizeof(kSidecarMagic));
+    uint64_t oldRaw = 0, newRaw = 0;
+    for (const auto& e : oldSc.entries) oldRaw += e.size;
+    for (const auto& e : newEntries) newRaw += e.size;
+
+    SidecarHeaderV2 hdr{};
+    std::memcpy(hdr.magic, kMagicV2, sizeof(kMagicV2));
     hdr.count = static_cast<uint32_t>(oldSc.entries.size() + newEntries.size());
+    hdr.payloadRaw = oldRaw + newRaw;
     bool ok = std::fwrite(&hdr, sizeof(hdr), 1, f) == 1;
     for (const auto& e : oldSc.entries) {
         SidecarEntryRec rec{e.offset, e.size};
@@ -165,41 +295,59 @@ bool saveSidecar(const std::string& path, const Sidecar& oldSc,
         if (!ok || std::fwrite(&rec, sizeof(rec), 1, f) != 1) ok = false;
     }
 
-    // ---- data section ---------------------------------------------------
-    // 1) previously backed-up ranges are copied verbatim from the old sidecar
-    if (ok && !oldSc.path.empty()) {
-        FILE* old = std::fopen(oldSc.path.c_str(), "rb");
-        if (!old ||
-            !usbutils::seek64(old, static_cast<int64_t>(
-                sizeof(SidecarHeader) + oldSc.entries.size() * sizeof(SidecarEntryRec)))) {
-            ok = false;
-            if (old) std::fclose(old);
-        } else {
-            std::vector<uint8_t> buf(4 * 1024 * 1024);
-            size_t n;
-            while (ok && (n = std::fread(buf.data(), 1, buf.size(), old)) > 0)
-                if (std::fwrite(buf.data(), 1, n, f) != n) ok = false;
-            std::fclose(old);
-        }
-    }
-    // 2) newly selected ranges are streamed out of the game chunks —
-    //    they are still original bytes at this point (blanking happens later)
-    std::vector<uint8_t> buf(4 * 1024 * 1024);
-    for (const auto& e : newEntries) {
-        uint64_t left = e.size;
+    if (ok) {
+        PayloadReader oldPayload(oldSc);
+        if (oldRaw > 0 && !oldPayload.valid()) ok = false;
+
+        size_t ni = 0;                         // cursor over newEntries
+        uint64_t noff = 0;
+        std::vector<uint8_t> raw(kLzBlockSize), comp;
+        uint64_t left = hdr.payloadRaw;
         while (ok && left > 0) {
-            const size_t want = static_cast<size_t>(
-                std::min<uint64_t>(buf.size(), left));
-            const size_t got = stream.read(e.offset + (e.size - left),
-                                           buf.data(), want);
-            if (got != want ||
-                std::fwrite(buf.data(), 1, got, f) != got) {
-                ok = false;
-                break;
+            const size_t rawLen = static_cast<size_t>(
+                std::min<uint64_t>(kLzBlockSize, left));
+            size_t have = 0;
+            while (have < rawLen) {
+                if (oldRaw > 0) {
+                    const size_t want = static_cast<size_t>(
+                        std::min<uint64_t>(rawLen - have, oldRaw));
+                    if (!oldPayload.read(raw.data() + have, want))
+                        { ok = false; break; }
+                    oldRaw -= want;
+                    have += want;
+                } else if (ni < newEntries.size()) {
+                    const SidecarEntry& e = newEntries[ni];
+                    const size_t want = static_cast<size_t>(
+                        std::min<uint64_t>(rawLen - have, e.size - noff));
+                    const size_t got = stream.read(e.offset + noff,
+                                                   raw.data() + have, want);
+                    if (got != want) { ok = false; break; }
+                    noff += want;
+                    if (noff == e.size) { ++ni; noff = 0; }
+                    have += want;
+                } else {
+                    ok = false;                // sources exhausted too early
+                    break;
+                }
             }
-            left -= got;
+            if (!ok) break;
+
+            comp.clear();
+            uint32_t bh = rawLen;              // bit31 = 0: stored
+            if (lzEncodeBlock(raw.data(), rawLen, comp)) {
+                bh = rawLen | 0x80000000u;
+                const uint32_t cl = static_cast<uint32_t>(comp.size());
+                ok = std::fwrite(&bh, sizeof(bh), 1, f) == 1
+                    && std::fwrite(&cl, sizeof(cl), 1, f) == 1
+                    && std::fwrite(comp.data(), 1, comp.size(), f) == comp.size();
+            } else {
+                ok = std::fwrite(&bh, sizeof(bh), 1, f) == 1
+                    && std::fwrite(raw.data(), 1, rawLen, f) == rawLen;
+            }
+            left -= rawLen;
         }
     }
+
     std::fclose(f);
 
     if (!ok) {
@@ -382,16 +530,9 @@ RipResult restoreMedia(const MediaDef& def,
         return res;
     }
 
-    FILE* f = std::fopen(scPath.c_str(), "rb");
-    if (!f) {
+    PayloadReader payload(sc);
+    if (!payload.valid()) {
         res.error = "cannot read backup file: " + scPath;
-        return res;
-    }
-    if (!usbutils::seek64(f,
-            static_cast<int64_t>(sizeof(SidecarHeader) +
-                                 sc.entries.size() * sizeof(SidecarEntryRec)))) {
-        std::fclose(f);
-        res.error = "backup file is truncated";
         return res;
     }
 
@@ -407,22 +548,24 @@ RipResult restoreMedia(const MediaDef& def,
             if (cancelled && cancelled()) { ok = false; res.error = "cancelled"; break; }
             const size_t want = static_cast<size_t>(
                 std::min<uint64_t>(buf.size(), left));
-            const size_t got = std::fread(buf.data(), 1, want, f);
-            if (got != want) { ok = false; res.error = "backup file is truncated"; break; }
-            if (!stream.write(e.offset + (e.size - left), buf.data(), got)) {
+            if (!payload.read(buf.data(), want)) {
+                ok = false;
+                res.error = "backup file is truncated or corrupt";
+                break;
+            }
+            if (!stream.write(e.offset + (e.size - left), buf.data(), want)) {
                 ok = false;
                 res.error = "write error while restoring";
                 break;
             }
-            left -= got;
-            done += got;
-            res.blankedBytes += got;         // bytes restored
+            left -= want;
+            done += want;
+            res.blankedBytes += want;         // bytes restored
             if (progress) progress(done, total);
         }
         if (ok) ++res.rippedCount;
         else break;
     }
-    std::fclose(f);
 
     if (!ok) return res;
 
