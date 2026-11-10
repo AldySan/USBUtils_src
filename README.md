@@ -76,6 +76,8 @@ Help menu, the CLI with `usbutils check-update`.
 
 - Turn in-game videos off and back on. Fully reversible, with an automatic
   backup of the original video data.
+- Turn in-game audio off and back on: music, voice, and sound effects
+  (`.VAG`, `.ADS`, `.SS2`, and friends), with the same reversible backup.
 - Find a file inside every game at once, with wildcards and a size filter
 - Browse one game's files, extract or replace them
 - Open any plain ISO, explore it, add / delete / rename files, edit the
@@ -159,6 +161,9 @@ usbutils rip 0 -d /media/usb0                 # turn videos off (reversible)
 usbutils rip 0 -d /media/usb0 --only "MOVIES\INTRO.PSS"
 usbutils rip 0 -d /media/usb0 --no-backup     # destructive, like the 2009 tool
 usbutils unrip 0 -d /media/usb0               # turn videos back on
+usbutils audio 0 -d /media/usb0               # list in-game audio files
+usbutils rip 0 -d /media/usb0 --audio         # turn audio off (reversible)
+usbutils unrip 0 -d /media/usb0 --audio       # turn audio back on
 usbutils ps2load 0 -d /media/usb0             # PS2Load status
 usbutils ps2load inject 0 -d /media/usb0 --elf data/PS2LOAD.ELF
 usbutils ps2load remove 0 -d /media/usb0      # undo the injection

@@ -1,4 +1,4 @@
-# Video rip / PS2Load / misc formats
+# Video rip / audio rip / PS2Load / misc formats
 
 ## In-game video handling ("Videos activate/deactivate/coincide")
 
@@ -59,6 +59,33 @@ usbutils unrip <index>   -d <dir>                 # restore all + drop backup
 "Turn OFF selected videos" / "Turn all videos back ON" — both run on a
 worker thread behind a cancelable progress dialog. The GUI always makes
 a backup.
+
+## In-game audio handling (audio rip)
+
+A USBUtils extension; the original tool had no audio rip. The same
+blank/restore mechanism, applied to standalone audio files:
+
+* Detected extensions (case-insensitive): `.VAG` (Sony ADPCM),
+  `.VAB`/`.VH`/`.VB` (VAB sample banks), `.ADS`/`.ASS`/`.SS2` (ADPCM
+  streams), `.MIB`/`.MIH` (interleaved music and its header).
+* The backup sidecar is `ul.<ID>.<SERIAL>.00.arip` — the same `USRRIP01`
+  container as `.rip`, so a video rip and an audio rip on the same game
+  keep independent backups and can be restored in either order.
+* Video detection (`.PSS`) and audio detection never overlap, so
+  `unrip` and `unrip --audio` each restore exactly their own media.
+
+### CLI
+
+```
+usbutils audio <index>  -d <dir>                        # list + state
+usbutils rip <index>    -d <dir> --audio [--only path,...] [--no-backup]
+usbutils unrip <index>  -d <dir> --audio                # restore + drop backup
+```
+
+### GUI
+
+`Advanced > Audio (turn off / restore)...` opens the same per-game dialog
+as the video rip, listing audio files instead.
 
 ## PS2LOAD.ELF injection
 
