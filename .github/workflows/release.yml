@@ -289,12 +289,9 @@ jobs:
           pattern: '*-package'
           merge-multiple: true
 
-      - name: Checksums
-        run: |
-          cd dist
-          sha256sum * > SHA256SUMS.txt
-          cat SHA256SUMS.txt
-          echo "RELEASE_NAME=USBUtils ${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+      # no SHA256SUMS file: GitHub shows each asset's SHA-256 digest natively
+      - name: Set release name
+        run: echo "RELEASE_NAME=USBUtils ${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
