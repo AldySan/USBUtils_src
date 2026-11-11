@@ -11,7 +11,7 @@ USBExtreme / USBAdvance game manager by ISEKO (2009).
 
 [![Release](https://img.shields.io/github/v/release/AldySan/USBUtils_src)](https://github.com/AldySan/USBUtils_src/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)](#building-from-source)
+[![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux-lightgrey)](#building-from-source)
 [![Standard](https://img.shields.io/badge/standard-C%2B%2B17-blue)](#building-from-source)
 [![GUI](https://img.shields.io/badge/GUI-Qt%205%20%2F%20Qt%206-green)](#building-from-source)
 [![Stars](https://img.shields.io/github/stars/AldySan/USBUtils_src)](https://github.com/AldySan/USBUtils_src/stargazers)
@@ -98,7 +98,7 @@ Help menu, the CLI with `usbutils check-update`.
 - One shared engine behind both the CLI and the GUI
 - Core library with no external dependencies; the GUI is the only part that
   needs Qt
-- USB drive discovery on Windows, Linux, and macOS
+- USB drive discovery on Windows and Linux
 - A support-files strip (the original's "Useful acquired" panel) that shows
   at a glance whether the shipped data files are present and healthy
 
