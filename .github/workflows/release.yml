@@ -145,9 +145,13 @@ jobs:
 
           tar -C pkg -czf "$NAME.tar.gz" "$NAME"
 
+          # list the archive once and grep the listing file: piping
+          # `tar tzf` into `grep -q` dies on SIGPIPE the moment grep finds
+          # the match, and pipefail then fails a check that actually passed
+          tar tzf "$NAME.tar.gz" > pkg-listing.txt
           for want in "lib/libQt6Core.so" "data/usbutil.dna" "data/usbutil.rcn" \
                       "SCEE_DD/IOPRP165.IMG" "usbutils.desktop" "usbutils-gui"; do
-              tar tzf "$NAME.tar.gz" | grep -q "$want" || { echo "FAIL: $want missing"; exit 1; }
+              grep -q "$want" pkg-listing.txt || { echo "FAIL: $want missing"; exit 1; }
           done
           echo "package OK: $NAME.tar.gz ($(du -h "$NAME.tar.gz" | cut -f1))"
 
@@ -171,7 +175,12 @@ jobs:
 
       - name: Version guard
         run: |
-          $ver = (Select-String -Path CMakeLists.txt -Pattern 'project\(USBUtils VERSION ([0-9.]+)\)').Matches[0].Groups[1].Value
+          # no trailing \) in the pattern: the project() line continues
+          # with LANGUAGES after the version, so requiring a closing paren
+          # right after the digits never matches
+          $m = Select-String -Path CMakeLists.txt -Pattern 'project\(USBUtils VERSION ([0-9.]+)'
+          if (-not $m) { Write-Host "::error::cannot read the version from CMakeLists.txt"; exit 1 }
+          $ver = $m.Matches[0].Groups[1].Value
           echo "VERSION=$ver" >> $env:GITHUB_ENV
           if ($env:GITHUB_REF.StartsWith('refs/tags/') -and $env:GITHUB_REF_NAME -ne "v$ver") {
             Write-Host "::error::tag $($env:GITHUB_REF_NAME) does not match CMakeLists.txt version $ver"
