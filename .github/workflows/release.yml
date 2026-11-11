@@ -174,18 +174,6 @@ jobs:
           tools: 'tools_mingw1310'
           cache: 'true'
 
-      - name: Use the MinGW toolchain Qt 6.8 was built with
-        run: |
-          # The runner's preinstalled MinGW (GCC 15) is too new for Qt's
-          # prebuilt 6.8 libraries: linking libQt6EntryPoint fails with
-          # "undefined reference to __imp___argc". Qt ships the matching
-          # MinGW 13.1 as a tool (installed above); put it first in PATH.
-          $gpp = Get-ChildItem -Path "$env:GITHUB_WORKSPACE\Qt\Tools" -Recurse -Filter "g++.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $gpp) { Write-Host "::error::Qt's MinGW toolchain not found under Qt\Tools"; exit 1 }
-          Write-Host "MinGW: $($gpp.FullName)"
-          Add-Content $env:GITHUB_PATH (Split-Path $gpp.FullName)
-          & $gpp.FullName --version | Select-Object -First 1
-
       - name: Version guard
         run: |
           # no trailing \) in the pattern: the project() line continues
@@ -205,6 +193,9 @@ jobs:
         env:
           CXX: g++
         run: |
+          # shows which g++ wins the PATH race (must be Qt's MinGW 13.1,
+          # not the runner's too-new system MinGW)
+          g++ --version | Select-Object -First 1
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
           if ($LASTEXITCODE -ne 0) { exit 1 }
           cmake --build build --parallel
