@@ -1936,9 +1936,9 @@ static void testGameOps() {
         // both sidecars along with the chunks (audit 002, R2)
         const std::string ripBroken  = "ul." + gid + "." + brokenSerial + ".00.rip";
         const std::string aripBroken = "ul." + gid + "." + brokenSerial + ".00.arip";
-        { FILE* f = std::fopen((dest2 / ripBroken).c_str(), "wb");
+        { FILE* f = std::fopen((dest2 / ripBroken).string().c_str(), "wb");
           std::fputs("RIPDATA", f); std::fclose(f); }
-        { FILE* f = std::fopen((dest2 / aripBroken).c_str(), "wb");
+        { FILE* f = std::fopen((dest2 / aripBroken).string().c_str(), "wb");
           std::fputs("ARIPDATA", f); std::fclose(f); }
 
         // dry run: sees the break, proposes the real serial
@@ -2034,11 +2034,11 @@ static void testSortAndClean() {
     // a rip sidecar of game[0] (either flavor) must count as a game file...
     const std::string rip = "ul." + ids[0] + ".SLUS_200.01.00.rip";
     const std::string arip = "ul." + ids[0] + ".SLUS_200.01.00.arip";
-    { FILE* f = std::fopen((base / rip).c_str(), "wb"); std::fputc(1, f); std::fclose(f); }
-    { FILE* f = std::fopen((base / arip).c_str(), "wb"); std::fputc(1, f); std::fclose(f); }
+    { FILE* f = std::fopen((base / rip).string().c_str(), "wb"); std::fputc(1, f); std::fclose(f); }
+    { FILE* f = std::fopen((base / arip).string().c_str(), "wb"); std::fputc(1, f); std::fclose(f); }
     // ...while an unreferenced chunk from a deleted game is obsolete
     const std::string stray = "ul.DEADBEEF.SLUS_999.99.00";
-    { FILE* f = std::fopen((base / stray).c_str(), "wb");
+    { FILE* f = std::fopen((base / stray).string().c_str(), "wb");
       std::fwrite("junk", 1, 4, f); std::fclose(f); }
 
     rep = scanDriveSpace(base.string());
@@ -2056,7 +2056,7 @@ static void testSortAndClean() {
     CHECK(rep.obsoleteFiles == 0);
 
     // ---- clean: zero-size detection -----------------------------------------
-    { FILE* f = std::fopen((base / "ul.CAFE0000.SLUS_000.00.01").c_str(), "wb");
+    { FILE* f = std::fopen((base / "ul.CAFE0000.SLUS_000.00.01").string().c_str(), "wb");
       std::fclose(f); }                                   // empty file
     rep = scanDriveSpace(base.string());
     CHECK(rep.zeroSizeFiles == 1);
