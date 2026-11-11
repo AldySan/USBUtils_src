@@ -262,6 +262,10 @@ public:
     PayloadReader(const PayloadReader&) = delete;
     PayloadReader& operator=(const PayloadReader&) = delete;
 
+    /// Release the file handle early. On Windows an open handle blocks
+    /// deleting or replacing the sidecar file.
+    void close() { if (f_) { std::fclose(f_); f_ = nullptr; } }
+
     bool valid() const { return f_ != nullptr; }
 
     /// Fill exactly `n` raw payload bytes; false on truncation/corruption.
@@ -745,7 +749,15 @@ RipResult restoreMedia(const MediaDef& def,
 
     if (!ok) return res;
 
-    std::remove(scPath.c_str());             // backup fully consumed
+    // The reader must release its handle first: on Windows an open
+    // handle blocks the delete, and a stale sidecar would make every
+    // media file look still ripped afterwards.
+    payload.close();
+    if (std::remove(scPath.c_str()) != 0) {
+        res.error = "media restored, but the backup file could not be "
+                    "deleted — delete it manually: " + scPath;
+        return res;
+    }
     res.ok = true;
     return res;
 }

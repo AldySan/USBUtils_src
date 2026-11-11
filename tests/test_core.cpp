@@ -2991,13 +2991,16 @@ static void testShrinkCfgFailure() {
         CHECK(cfg.save());
     }
 
-    // ul.cfg cannot be written (directory read-only): the rewrite must
-    // stop after the cut and keep every chunk file on disk
+    // ul.cfg cannot be written: the read-only directory blocks the
+    // rewrite on POSIX, the read-only ul.cfg blocks the swap on Windows.
+    // The rewrite must stop after the cut and keep every chunk on disk
     fs::permissions(base, fs::perms::owner_read | fs::perms::owner_exec
                               | fs::perms::group_read | fs::perms::group_exec
                               | fs::perms::others_read | fs::perms::others_exec);
+    fs::permissions(base / "ul.cfg", fs::perms::owner_read);
     const ShrinkResult r = shrinkGame(base.string(), id, serial, 5, false);
     fs::permissions(base, fs::perms::owner_all);
+    fs::permissions(base / "ul.cfg", fs::perms::owner_all);
     CHECK(!r.ok);
     CHECK(r.error.find("ul.cfg") != std::string::npos);
     CHECK(r.error.find("still on disk") != std::string::npos);
@@ -3113,14 +3116,20 @@ static void testShrinkDiscardBlocked() {
     CHECK(rr.ok && rr.rippedCount == 2);
     CHECK(videoBackupSize(base.string(), ir.idHex, ir.serial) > 0);
 
-    // the sidecar cannot be deleted (directory read-only): --discard-backups
-    // must refuse instead of shrinking past a backup it could not remove
+    // the sidecar cannot be deleted: the read-only directory blocks the
+    // delete on POSIX, the read-only file blocks it on Windows. Either
+    // way --discard-backups must refuse instead of shrinking past a
+    // backup it could not remove
     fs::permissions(base, fs::perms::owner_read | fs::perms::owner_exec
                               | fs::perms::group_read | fs::perms::group_exec
                               | fs::perms::others_read | fs::perms::others_exec);
+    const fs::path sidecar =
+        base / (chunkFileName(ir.idHex, ir.serial, 0) + ".rip");
+    fs::permissions(sidecar, fs::perms::owner_read);
     const ShrinkResult r = shrinkGame(base.string(), ir.idHex, ir.serial,
                                       ir.parts, /*discardBackups*/ true);
     fs::permissions(base, fs::perms::owner_all);
+    fs::permissions(sidecar, fs::perms::owner_all);
     CHECK(!r.ok);
     CHECK(r.error.find("could not be deleted") != std::string::npos);
 

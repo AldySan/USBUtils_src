@@ -75,8 +75,12 @@ bool UlCfg::save() const {
         if (std::fwrite(&r, sizeof(r), 1, f) != 1) { std::fclose(f); return false; }
     std::fclose(f);
 
-    std::remove(path.c_str());           // ignore: rename overwrites on POSIX
-    return std::rename(tmp.c_str(), path.c_str()) == 0;
+    std::remove(path.c_str());           // rename does not replace on Windows
+    if (std::rename(tmp.c_str(), path.c_str()) != 0) {
+        std::remove(tmp.c_str());        // do not litter a dead .new file
+        return false;
+    }
+    return true;
 }
 
 bool UlCfg::append(const UlCfgRecord& rec) {

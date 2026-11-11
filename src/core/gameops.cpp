@@ -422,23 +422,27 @@ std::vector<SerialFix> fixBrokenSerials(const std::string& dir, UlCfg& cfg,
         fix.oldSerial = serial;
 
         // re-derive the real serial from the game's own SYSTEM.CNF
-        GameStream gs;
+        // (the stream is scoped: on Windows its cached handles would
+        // block the chunk renames below)
         std::string cnf;
-        if (gs.open(dir, gameIdHex(r.nameStr()), serial, r.parts)) {
-            walkIso([&gs](uint64_t off, void* dst, size_t n) {
-                return gs.read(off, dst, n) == n;
-            }, [&gs, &cnf](const IsoEntry& e) {
-                // case-insensitive like readIsoInfo()/probeOpticalDrive() —
-                // some non-standard rips store a lower-case entry name
-                if (!e.isDir && toLowerAscii(e.name) == "system.cnf") {
-                    const size_t want =
-                        static_cast<size_t>(std::min<uint64_t>(e.size, 512));
-                    cnf.assign(want, '\0');
-                    gs.read(uint64_t(e.lba) * 2048ull, &cnf[0], want);
-                    return false;      // stop the walk
-                }
-                return true;
-            });
+        {
+            GameStream gs;
+            if (gs.open(dir, gameIdHex(r.nameStr()), serial, r.parts)) {
+                walkIso([&gs](uint64_t off, void* dst, size_t n) {
+                    return gs.read(off, dst, n) == n;
+                }, [&gs, &cnf](const IsoEntry& e) {
+                    // case-insensitive like readIsoInfo()/probeOpticalDrive() —
+                    // some non-standard rips store a lower-case entry name
+                    if (!e.isDir && toLowerAscii(e.name) == "system.cnf") {
+                        const size_t want =
+                            static_cast<size_t>(std::min<uint64_t>(e.size, 512));
+                        cnf.assign(want, '\0');
+                        gs.read(uint64_t(e.lba) * 2048ull, &cnf[0], want);
+                        return false;      // stop the walk
+                    }
+                    return true;
+                });
+            }
         }
         if (!cnf.empty())
             fix.newSerial = normalizeSerial(bootElfFromCnf(cnf));
