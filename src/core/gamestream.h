@@ -37,6 +37,11 @@ public:
     bool open(const std::string& dir, const std::string& idHex,
               const std::string& serial, uint32_t parts);
 
+    /// Release every cached chunk handle without destroying the object.
+    /// Needed on Windows, where an open handle blocks deleting/renaming
+    /// the file; a no-op when the stream is already closed.
+    void close() { closeAll_(); }
+
     uint64_t size()  const { return total_; }
     uint32_t parts() const { return parts_; }
     bool     valid() const { return parts_ > 0; }

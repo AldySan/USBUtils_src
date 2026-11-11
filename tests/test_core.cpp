@@ -496,6 +496,7 @@ static void testGameStream() {
         CHECK(t.open(base.string(), id, serial, 2));
         CHECK(t.size() == 150);
     }
+    s.close();                // cached handles block the removal on Windows
     fs::remove_all(base);
 }
 
@@ -1761,6 +1762,7 @@ static void testPs2Load() {
         }
     }
 
+    gs.close();               // cached handles block the removal on Windows
     fs::remove_all(base);
 }
 
@@ -2662,6 +2664,7 @@ static void testShrink() {
     CHECK(again.ok);
     CHECK(again.newBytes == again.oldBytes);
 
+    s.close();                // cached handles block the removal on Windows
     fs::remove_all(base);
 }
 
@@ -2730,6 +2733,7 @@ static void testShrinkParts() {
         s, uint64_t(files.at("DUMMIES\\DUP2.BIN").lba) * 2048, 2 * 2048);
     CHECK(d1 == d2);
 
+    s.close();                // cached handles block the removal on Windows
     fs::remove_all(base);
 }
 
@@ -3025,6 +3029,7 @@ static void testShrinkCfgFailure() {
     const auto d2 = readRange(
         s, uint64_t(files.at("DUMMIES\\DUP2.BIN").lba) * 2048, 2 * 2048);
     CHECK(d1.size() == 2 * 2048 && d1 == d2);
+    s.close();                // cached handles block the removals on Windows
 
     // ---- the record-disappeared variant stages the real ordering ------
     // (a writable directory lets the pre-fix code DELETE the surplus
